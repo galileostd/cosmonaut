@@ -5,6 +5,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -13,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/galileostd/cosmonaut/control-plane/internal/api"
 	"github.com/galileostd/cosmonaut/control-plane/internal/health"
 	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
 
@@ -23,16 +25,14 @@ import (
 var scheme = runtime.NewScheme()
 
 func init() {
-	// register standard K8s types
 	_ = clientgoscheme.AddToScheme(scheme)
-	// register Cosmonaut CRD types
 	_ = registry.AddToScheme(scheme)
 }
 
 func main() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(envOr("COSMONAUT_DEV", "") == "true")))
 
-	slog.Info("starting cosmonaut control plane", "version", "v0.1.0")
+	slog.Info("starting cosmonaut control plane", "version", api.BuildVersion)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -48,11 +48,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// register the health controller
+	// build the API server
+	apiServer := api.New(api.Config{
+		Addr: envOr("COSMONAUT_API_ADDR", ":8080"),
+		OIDC: api.OIDCConfig{
+			IssuerURL: envOr("COSMONAUT_OIDC_ISSUER", ""),
+			ClientID:  envOr("COSMONAUT_OIDC_CLIENT_ID", "cosmonaut"),
+			Enabled:   envOr("COSMONAUT_AUTH_ENABLED", "false") == "true",
+		},
+		CORSAllowedOrigins: envOr("COSMONAUT_CORS_ORIGINS", "*"),
+		RequestTimeout:     60 * time.Second,
+	}, mgr.GetClient())
+
+	// register the health controller, passing the event bus so it can publish events
 	if err := (&health.Controller{
-		Client: mgr.GetClient(),
+		Client:   mgr.GetClient(),
+		EventBus: apiServer.EventBus(),
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to set up health controller", "err", err)
+		os.Exit(1)
+	}
+
+	// register the API server as a runnable so controller-runtime manages its lifecycle
+	if err := mgr.Add(apiServer); err != nil {
+		slog.Error("unable to add API server to manager", "err", err)
 		os.Exit(1)
 	}
 

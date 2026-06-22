@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/galileostd/cosmonaut/sdk"
+	"github.com/galileostd/cosmonaut/control-plane/internal/api"
 	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
 )
 
@@ -29,6 +30,7 @@ const (
 // Controller reconciles CosmoComponent objects.
 type Controller struct {
 	client.Client
+	EventBus *api.EventBus  // <-- ADICIONE ESTE CAMPO
 }
 
 // SetupWithManager registers the controller with the controller-runtime manager.
@@ -98,6 +100,16 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	result, err := c.setStatus(ctx, &component, status, capabilities)
+
+	// Publish event via EventBus if available
+	if c.EventBus != nil {
+		c.EventBus.PublishHealthChanged(
+			component.Namespace,
+			component.Name,
+			string(status.State),
+			status.Message,
+		)
+	}
 
 	// requeue after the configured interval
 	interval := defaultHealthCheckInterval

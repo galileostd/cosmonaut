@@ -123,7 +123,7 @@ type Plugin interface {
 
 	// Execute performs an action on the component.
 	// The action type must be one returned by GetCapabilities.
-	Execute(ctx context.Context, action Action) (Result, error)
+	Execute(ctx context.Context, component Component, action Action) (Result, error)
 
 	// Describe returns static metadata about this plugin.
 	Describe() ComponentInfo

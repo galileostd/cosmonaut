@@ -3,7 +3,7 @@
 #
 # Prerequisites:
 #   - Minikube installed
-#   - Go 1.22+
+#   - Go 1.26+
 #   - kubectl
 #
 # Usage:

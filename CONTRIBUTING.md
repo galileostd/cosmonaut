@@ -16,7 +16,7 @@ Thank you for your interest in contributing. This document covers everything you
 
 ### Requirements
 
-- Go 1.22+
+- Go 1.26+
 - Node.js 20+ (for the UI)
 - Docker
 - `kubectl` + a local Kubernetes cluster (Minikube or kind)
