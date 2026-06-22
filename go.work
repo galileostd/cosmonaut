@@ -1,13 +1,8 @@
-go 1.23.0
+go 1.26.4
 
 use (
-    ./control-plane
-    ./cli
-    ./sdk
-    ./plugins/trino
-    ./plugins/spark
-    ./plugins/flink
-    ./plugins/airflow
-    ./plugins/polaris
-    ./plugins/kafka
+	./cli
+	./control-plane
+	./plugins/trino
+	./sdk
 )
