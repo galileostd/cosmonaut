@@ -1,0 +1,47 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+cosmo
+control-plane/control-plane
+
+# Go
+/vendor/
+go.sum
+*.mod
+
+# Node / UI
+ui/node_modules/
+ui/.svelte-kit/
+ui/build/
+ui/dist/
+ui/.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Kubernetes / Helm
+charts/**/values.local.yaml
+charts/**/charts/
+charts/**/tmp/
+
+# Logs
+logs/
+*.log
+
+# Docs
+docs/_build/
+site/
