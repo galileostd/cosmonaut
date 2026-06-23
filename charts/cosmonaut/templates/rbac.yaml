@@ -1,0 +1,44 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cosmonaut.fullname" . }}
+  labels:
+    {{- include "cosmonaut.labels" . | nindent 4 }}
+rules:
+  # CosmoComponent CRDs — full access
+  - apiGroups: ["cosmonaut.galileostd.io"]
+    resources: ["cosmocomponents"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cosmonaut.galileostd.io"]
+    resources: ["cosmocomponents/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Services — watch all namespaces for plugin discovery
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+
+  # Events — for controller-runtime event recording
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cosmonaut.fullname" . }}
+  labels:
+    {{- include "cosmonaut.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cosmonaut.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cosmonaut.fullname" . }}
+    namespace: {{ .Release.Namespace }}
