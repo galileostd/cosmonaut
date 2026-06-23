@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/galileostd/cosmonaut/sdk"
+	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
 )
 
 // JobStatus represents the lifecycle state of an async job.
@@ -25,20 +25,20 @@ const (
 
 // Job represents an async execution submitted via /exec.
 type Job struct {
-	ID        string
-	Status    JobStatus
-	Result    *sdk.Result
-	Error     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	cancel    context.CancelFunc
+	ID          string
+	Status      JobStatus
+	PluginJobID string // job ID returned by the plugin
+	Result      map[string]string
+	Error       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	cancel      context.CancelFunc
 }
 
 // JobFunc is the function executed by a job.
-type JobFunc func(ctx context.Context) (sdk.Result, error)
+type JobFunc func(ctx context.Context) (*pluginv1.ExecuteResponse, error)
 
 // JobStore manages async jobs in memory.
-// Jobs are retained for 24 hours after completion, then pruned.
 type JobStore struct {
 	mu   sync.RWMutex
 	jobs map[string]*Job
@@ -50,7 +50,6 @@ func newJobStore() *JobStore {
 	return js
 }
 
-// Submit enqueues a job for async execution and returns it immediately.
 func (js *JobStore) Submit(fn JobFunc) *Job {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 
@@ -67,11 +66,9 @@ func (js *JobStore) Submit(fn JobFunc) *Job {
 	js.mu.Unlock()
 
 	go js.run(ctx, job, fn)
-
 	return job
 }
 
-// Get returns a job by ID.
 func (js *JobStore) Get(id string) (*Job, bool) {
 	js.mu.RLock()
 	defer js.mu.RUnlock()
@@ -79,7 +76,6 @@ func (js *JobStore) Get(id string) (*Job, bool) {
 	return j, ok
 }
 
-// List returns all jobs, optionally filtered by status.
 func (js *JobStore) List(statusFilter string) []*Job {
 	js.mu.RLock()
 	defer js.mu.RUnlock()
@@ -93,7 +89,6 @@ func (js *JobStore) List(statusFilter string) []*Job {
 	return jobs
 }
 
-// Cancel attempts to cancel a running job.
 func (js *JobStore) Cancel(id string) bool {
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -112,25 +107,26 @@ func (js *JobStore) Cancel(id string) bool {
 }
 
 func (js *JobStore) run(ctx context.Context, job *Job, fn JobFunc) {
-	js.updateStatus(job.ID, JobStatusRunning, nil, "")
+	js.updateStatus(job.ID, JobStatusRunning, "", nil, "")
 
-	result, err := fn(ctx)
-
+	resp, err := fn(ctx)
 	if err != nil {
 		slog.Error("job failed", "job_id", job.ID, "err", err)
-		js.updateStatus(job.ID, JobStatusFailed, nil, err.Error())
+		js.updateStatus(job.ID, JobStatusFailed, "", nil, err.Error())
 		return
 	}
 
-	if !result.Success {
-		js.updateStatus(job.ID, JobStatusFailed, &result, result.Error)
-		return
+	switch resp.State {
+	case pluginv1.JobState_JOB_STATE_FAILED:
+		js.updateStatus(job.ID, JobStatusFailed, resp.JobId, resp.Result, resp.Message)
+	case pluginv1.JobState_JOB_STATE_CANCELED:
+		js.updateStatus(job.ID, JobStatusCanceled, resp.JobId, resp.Result, resp.Message)
+	default:
+		js.updateStatus(job.ID, JobStatusDone, resp.JobId, resp.Result, "")
 	}
-
-	js.updateStatus(job.ID, JobStatusDone, &result, "")
 }
 
-func (js *JobStore) updateStatus(id string, status JobStatus, result *sdk.Result, errMsg string) {
+func (js *JobStore) updateStatus(id string, status JobStatus, pluginJobID string, result map[string]string, errMsg string) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -139,16 +135,17 @@ func (js *JobStore) updateStatus(id string, status JobStatus, result *sdk.Result
 		return
 	}
 	j.Status = status
+	if pluginJobID != "" {
+		j.PluginJobID = pluginJobID
+	}
 	j.Result = result
 	j.Error = errMsg
 	j.UpdatedAt = time.Now()
 }
 
-// pruneLoop removes completed jobs older than 24 hours.
 func (js *JobStore) pruneLoop() {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
-
 	for range ticker.C {
 		js.prune()
 	}
@@ -156,7 +153,6 @@ func (js *JobStore) pruneLoop() {
 
 func (js *JobStore) prune() {
 	cutoff := time.Now().Add(-24 * time.Hour)
-
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -164,7 +160,6 @@ func (js *JobStore) prune() {
 		terminal := j.Status == JobStatusDone ||
 			j.Status == JobStatusFailed ||
 			j.Status == JobStatusCanceled
-
 		if terminal && j.UpdatedAt.Before(cutoff) {
 			delete(js.jobs, id)
 		}

@@ -45,3 +45,6 @@ logs/
 # Docs
 docs/_build/
 site/
+
+# Temp
+tmp/

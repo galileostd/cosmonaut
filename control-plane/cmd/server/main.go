@@ -9,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -16,10 +17,8 @@ import (
 
 	"github.com/galileostd/cosmonaut/control-plane/internal/api"
 	"github.com/galileostd/cosmonaut/control-plane/internal/health"
+	"github.com/galileostd/cosmonaut/control-plane/internal/plugin"
 	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
-
-	// register native plugins
-	_ "github.com/galileostd/cosmonaut/plugins/trino"
 )
 
 var scheme = runtime.NewScheme()
@@ -27,6 +26,7 @@ var scheme = runtime.NewScheme()
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = registry.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 }
 
 func main() {
@@ -48,7 +48,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// build the API server
+	// plugin manager — maintains gRPC connections to discovered plugins
+	pluginManager := plugin.NewManager()
+
+	// API server
 	apiServer := api.New(api.Config{
 		Addr: envOr("COSMONAUT_API_ADDR", ":8080"),
 		OIDC: api.OIDCConfig{
@@ -58,24 +61,33 @@ func main() {
 		},
 		CORSAllowedOrigins: envOr("COSMONAUT_CORS_ORIGINS", "*"),
 		RequestTimeout:     60 * time.Second,
-	}, mgr.GetClient())
+	}, mgr.GetClient(), pluginManager)
 
-	// register the health controller, passing the event bus so it can publish events
+	// health controller
 	if err := (&health.Controller{
 		Client:   mgr.GetClient(),
+		Plugins:  pluginManager,
 		EventBus: apiServer.EventBus(),
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to set up health controller", "err", err)
 		os.Exit(1)
 	}
 
-	// register the API server as a runnable so controller-runtime manages its lifecycle
+	// plugin discovery controller
+	if err := (&plugin.DiscoveryController{
+		Client:  mgr.GetClient(),
+		Manager: pluginManager,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("unable to set up plugin discovery controller", "err", err)
+		os.Exit(1)
+	}
+
+	// API server as a runnable
 	if err := mgr.Add(apiServer); err != nil {
 		slog.Error("unable to add API server to manager", "err", err)
 		os.Exit(1)
 	}
 
-	// liveness and readiness probes
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		slog.Error("unable to set up healthz", "err", err)
 		os.Exit(1)

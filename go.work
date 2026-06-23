@@ -3,6 +3,4 @@ go 1.26.4
 use (
 	./cli
 	./control-plane
-	./plugins/trino
-	./sdk
 )

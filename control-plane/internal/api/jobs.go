@@ -25,7 +25,7 @@ func toJobResponse(j *Job) jobResponse {
 		UpdatedAt: j.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if j.Result != nil {
-		resp.Result = j.Result.Data
+		resp.Result = j.Result
 	}
 	return resp
 }

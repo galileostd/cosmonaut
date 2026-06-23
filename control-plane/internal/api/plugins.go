@@ -2,18 +2,21 @@ package api
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/galileostd/cosmonaut/sdk"
+	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
 )
 
 type pluginResponse struct {
-	Name         string   `json:"name"`
-	DisplayName  string   `json:"display_name"`
-	Type         string   `json:"type"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	Capabilities []capabilityResponse `json:"capabilities"`
+	Name          string               `json:"name"`
+	DisplayName   string               `json:"display_name"`
+	PluginType    string               `json:"plugin_type"`
+	ExecutionType string               `json:"execution_type"`
+	WorkloadType  string               `json:"workload_type,omitempty"`
+	Version       string               `json:"version"`
+	Description   string               `json:"description"`
+	Capabilities  []capabilityResponse `json:"capabilities"`
 }
 
 type capabilityResponse struct {
@@ -21,19 +24,19 @@ type capabilityResponse struct {
 	Description string `json:"description"`
 }
 
-// handleListPlugins returns all plugins registered in this control plane instance.
+// handleListPlugins returns all plugins discovered in the cluster.
 // GET /api/v1/plugins
 func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
-	all := sdk.All()
 	p := parsePagination(r)
 
-	plugins := make([]pluginResponse, 0, len(all))
-	for _, plugin := range all {
-		plugins = append(plugins, toPluginResponse(plugin))
-	}
+	details := s.plugins.All(r.Context())
 
-	// simple offset/limit over the map (order is not guaranteed — sort by name)
-	total := len(plugins)
+	// sort by name for deterministic output
+	sort.Slice(details, func(i, j int) bool {
+		return details[i].Info.Name < details[j].Info.Name
+	})
+
+	total := len(details)
 	start := p.Offset
 	if start > total {
 		start = total
@@ -43,7 +46,12 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		end = total
 	}
 
-	writeJSON(w, http.StatusOK, newPagedResponse(plugins[start:end], total, p))
+	responses := make([]pluginResponse, len(details[start:end]))
+	for i, d := range details[start:end] {
+		responses[i] = toPluginResponse(d.Describe)
+	}
+
+	writeJSON(w, http.StatusOK, newPagedResponse(responses, total, p))
 }
 
 // handleGetPlugin returns a single plugin by name.
@@ -51,33 +59,37 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetPlugin(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
-	plugin := sdk.Get(name)
-	if plugin == nil {
+	desc, err := s.plugins.Describe(r.Context(), name)
+	if err != nil {
 		writeProblem(w, r, problemNotFound(r, "plugin '"+name+"' is not registered in this control plane"))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toPluginResponse(plugin))
+	writeJSON(w, http.StatusOK, toPluginResponse(desc))
 }
 
-func toPluginResponse(p sdk.Plugin) pluginResponse {
-	info := p.Describe()
-	caps := p.GetCapabilities()
-
-	capResponses := make([]capabilityResponse, len(caps))
-	for i, c := range caps {
-		capResponses[i] = capabilityResponse{
-			Type:        string(c.Type),
+func toPluginResponse(desc *pluginv1.DescribeResponse) pluginResponse {
+	caps := make([]capabilityResponse, len(desc.Capabilities))
+	for i, c := range desc.Capabilities {
+		caps[i] = capabilityResponse{
+			Type:        c.Type,
 			Description: c.Description,
 		}
 	}
 
-	return pluginResponse{
-		Name:         info.PluginName,
-		DisplayName:  info.DisplayName,
-		Type:         string(info.Type),
-		Version:      info.Version,
-		Description:  info.Description,
-		Capabilities: capResponses,
+	resp := pluginResponse{
+		Name:          desc.PluginName,
+		DisplayName:   desc.DisplayName,
+		PluginType:    desc.PluginType.String(),
+		ExecutionType: desc.ExecutionType.String(),
+		Version:       desc.Version,
+		Description:   desc.Description,
+		Capabilities:  caps,
 	}
+
+	if desc.WorkloadType != pluginv1.WorkloadType_WORKLOAD_TYPE_UNSPECIFIED {
+		resp.WorkloadType = desc.WorkloadType.String()
+	}
+
+	return resp
 }

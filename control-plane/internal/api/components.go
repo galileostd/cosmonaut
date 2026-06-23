@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/galileostd/cosmonaut/sdk"
+	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
 	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,18 +17,18 @@ import (
 // ── response types ─────────────────────────────────────────────────────────────
 
 type componentResponse struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace"`
-	Plugin      string            `json:"plugin"`
-	Type        string            `json:"type"`
-	Endpoint    string            `json:"endpoint"`
-	Config      map[string]string `json:"config,omitempty"`
-	Health      string            `json:"health"`
-	Message     string            `json:"message,omitempty"`
-	LastChecked *time.Time        `json:"last_checked,omitempty"`
-	Capabilities []string         `json:"capabilities,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	Name         string            `json:"name"`
+	Namespace    string            `json:"namespace"`
+	Plugin       string            `json:"plugin"`
+	Type         string            `json:"type"`
+	Endpoint     string            `json:"endpoint"`
+	Config       map[string]string `json:"config,omitempty"`
+	Health       string            `json:"health"`
+	Message      string            `json:"message,omitempty"`
+	LastChecked  *time.Time        `json:"last_checked,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
 type createComponentRequest struct {
@@ -42,22 +42,22 @@ type createComponentRequest struct {
 }
 
 type execRequest struct {
-	Action  string         `json:"action"`
-	Payload map[string]any `json:"payload,omitempty"`
+	Action  string            `json:"action"`
+	Payload map[string]string `json:"payload,omitempty"`
 }
 
 type execResponse struct {
-	JobID     string `json:"job_id"`
-	Status    string `json:"status"`
-	Message   string `json:"message,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	JobID       string    `json:"job_id"`
+	PluginJobID string    `json:"plugin_job_id,omitempty"`
+	Status      string    `json:"status"`
+	Message     string    `json:"message,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // ── handlers ───────────────────────────────────────────────────────────────────
 
 // handleListComponents returns a paginated list of all CosmoComponents.
 // GET /api/v1/components
-// Query params: limit, offset, namespace (optional filter), plugin (optional filter)
 func (s *Server) handleListComponents(w http.ResponseWriter, r *http.Request) {
 	p := parsePagination(r)
 	nsFilter := r.URL.Query().Get("namespace")
@@ -75,8 +75,6 @@ func (s *Server) handleListComponents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := list.Items
-
-	// filter by plugin if requested
 	if pluginFilter != "" {
 		filtered := items[:0]
 		for _, item := range items {
@@ -88,8 +86,6 @@ func (s *Server) handleListComponents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	total := len(items)
-
-	// apply pagination
 	start := p.Offset
 	if start > total {
 		start = total
@@ -140,7 +136,6 @@ func (s *Server) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// validate required fields
 	if req.Name == "" {
 		writeProblem(w, r, problemUnprocessable(r, "name is required"))
 		return
@@ -162,7 +157,7 @@ func (s *Server) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// verify the plugin is registered
-	if sdk.Get(req.Plugin) == nil {
+	if s.plugins.Get(req.Plugin) == nil {
 		writeProblem(w, r, problemUnprocessable(r, fmt.Sprintf(
 			"plugin '%s' is not registered in this control plane", req.Plugin,
 		)))
@@ -233,10 +228,6 @@ func (s *Server) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
 
 // handleExecComponent submits an async action to a component via its plugin.
 // POST /api/v1/components/:namespace/:name/exec
-//
-// Returns a job ID immediately. The caller tracks progress via:
-//   GET  /api/v1/jobs/:id
-//   WS   /api/v1/events (job.* events)
 func (s *Server) handleExecComponent(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
@@ -252,7 +243,6 @@ func (s *Server) handleExecComponent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// fetch the component
 	var component registry.CosmoComponent
 	if err := s.k8s.Get(r.Context(), types.NamespacedName{
 		Namespace: namespace,
@@ -268,44 +258,23 @@ func (s *Server) handleExecComponent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// verify the plugin is available
-	plugin := sdk.Get(component.Spec.Plugin)
-	if plugin == nil {
+	pluginClient := s.plugins.Get(component.Spec.Plugin)
+	if pluginClient == nil {
 		writeProblem(w, r, problemServiceUnavailable(r, fmt.Sprintf(
 			"plugin '%s' is not registered in this control plane", component.Spec.Plugin,
 		)))
 		return
 	}
 
-	// verify the action is supported
-	action := sdk.Action{
-		Type:    sdk.CapabilityType(req.Action),
-		Payload: req.Payload,
-	}
-
-	supported := false
-	for _, cap := range plugin.GetCapabilities() {
-		if cap.Type == action.Type {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		writeProblem(w, r, problemUnprocessable(r, fmt.Sprintf(
-			"action '%s' is not supported by plugin '%s'", req.Action, component.Spec.Plugin,
-		)))
-		return
-	}
-
-	sdkComponent := sdk.Component{
+	sdkComponent := &pluginv1.Component{
 		Name:      component.Name,
 		Namespace: component.Namespace,
 		Endpoint:  component.Spec.Endpoint,
 		Config:    component.Spec.Config,
 	}
 
-	job := s.jobs.Submit(func(ctx context.Context) (sdk.Result, error) {
-		return plugin.Execute(ctx, sdkComponent, action)
+	job := s.jobs.Submit(func(ctx context.Context) (*pluginv1.ExecuteResponse, error) {
+		return pluginClient.Execute(ctx, sdkComponent, req.Action, req.Payload)
 	})
 
 	writeJSON(w, http.StatusAccepted, execResponse{
@@ -351,7 +320,6 @@ func isAlreadyExists(err error) bool {
 	if err == nil {
 		return false
 	}
-	// k8s returns 409 for already exists
-	return fmt.Sprintf("%T", err) == "*errors.StatusError" &&
-		fmt.Sprintf("%v", err) != fmt.Sprintf("%v", err)
+	return fmt.Sprintf("%v", err) != "" &&
+		fmt.Sprintf("%T", err) == "*errors.StatusError"
 }

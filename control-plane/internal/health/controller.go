@@ -1,6 +1,4 @@
 // Package health implements the CosmoComponent health controller.
-// It watches all CosmoComponent objects in the cluster and periodically
-// calls the corresponding plugin's HealthCheck, updating the component status.
 package health
 
 import (
@@ -15,22 +13,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/galileostd/cosmonaut/sdk"
-	"github.com/galileostd/cosmonaut/control-plane/internal/api"
+	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
+	"github.com/galileostd/cosmonaut/control-plane/internal/plugin"
 	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
 )
 
 const (
 	defaultHealthCheckInterval = 30 * time.Second
 	healthCheckTimeout         = 10 * time.Second
-
-	conditionTypeHealthy = "Healthy"
+	conditionTypeHealthy       = "Healthy"
 )
+
+// EventPublisher is the interface the health controller uses to publish events.
+type EventPublisher interface {
+	PublishHealthChanged(namespace, name, health, message string)
+}
 
 // Controller reconciles CosmoComponent objects.
 type Controller struct {
 	client.Client
-	EventBus *api.EventBus  // <-- ADICIONE ESTE CAMPO
+	Plugins  *plugin.Manager
+	EventBus EventPublisher
 }
 
 // SetupWithManager registers the controller with the controller-runtime manager.
@@ -40,78 +43,74 @@ func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(c)
 }
 
-// Reconcile is called by controller-runtime whenever a CosmoComponent is
-// created, updated, or deleted — and also on a periodic requeue.
+// Reconcile is called whenever a CosmoComponent is created, updated, or deleted.
 func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := slog.With("component", req.NamespacedName)
 
-	// fetch the component
 	var component registry.CosmoComponent
 	if err := c.Get(ctx, req.NamespacedName, &component); err != nil {
 		if errors.IsNotFound(err) {
-			// component was deleted — nothing to do
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, fmt.Errorf("fetching CosmoComponent: %w", err)
 	}
 
-	// find the plugin
-	plugin := sdk.Get(component.Spec.Plugin)
-	if plugin == nil {
+	pluginClient := c.Plugins.Get(component.Spec.Plugin)
+	if pluginClient == nil {
 		log.Warn("no plugin registered for component", "plugin", component.Spec.Plugin)
-		return c.setStatus(ctx, &component, sdk.HealthStatus{
-			State:   sdk.HealthStateUnknown,
-			Message: fmt.Sprintf("plugin %q is not registered in this control plane", component.Spec.Plugin),
-		}, nil)
+		return c.setStatus(ctx, &component, pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
+			fmt.Sprintf("plugin %q is not registered in this control plane", component.Spec.Plugin),
+			nil,
+		)
 	}
 
-	// run the health check with a timeout
 	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
 
-	sdkComponent := sdk.Component{
+	sdkComponent := &pluginv1.Component{
 		Name:      component.Name,
 		Namespace: component.Namespace,
 		Endpoint:  component.Spec.Endpoint,
 		Config:    component.Spec.Config,
 	}
 
-	status, err := plugin.HealthCheck(checkCtx, sdkComponent)
+	resp, err := pluginClient.HealthCheck(checkCtx, sdkComponent)
 	if err != nil {
 		log.Error("health check error", "plugin", component.Spec.Plugin, "err", err)
-		status = sdk.HealthStatus{
-			State:   sdk.HealthStateUnknown,
-			Message: fmt.Sprintf("health check failed: %v", err),
-		}
+		return c.setStatus(ctx, &component, pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
+			fmt.Sprintf("health check failed: %v", err),
+			nil,
+		)
 	}
 
 	log.Info("health check complete",
 		"plugin", component.Spec.Plugin,
-		"state", status.State,
-		"message", status.Message,
+		"state", resp.State,
+		"message", resp.Message,
 	)
 
-	// collect capabilities on healthy state
-	var capabilities []string
-	if status.State == sdk.HealthStateHealthy {
-		for _, cap := range plugin.GetCapabilities() {
-			capabilities = append(capabilities, string(cap.Type))
-		}
-	}
-
-	result, err := c.setStatus(ctx, &component, status, capabilities)
-
-	// Publish event via EventBus if available
 	if c.EventBus != nil {
 		c.EventBus.PublishHealthChanged(
 			component.Namespace,
 			component.Name,
-			string(status.State),
-			status.Message,
+			resp.State.String(),
+			resp.Message,
 		)
 	}
 
-	// requeue after the configured interval
+	// collect capabilities on healthy state
+	var capabilities []string
+	if resp.State == pluginv1.HealthState_HEALTH_STATE_HEALTHY {
+		desc, err := pluginClient.Describe(checkCtx)
+		if err == nil {
+			for _, cap := range desc.Capabilities {
+				capabilities = append(capabilities, cap.Type)
+			}
+		}
+	}
+
+	result, err := c.setStatus(ctx, &component, resp.State, resp.Message, capabilities)
+
 	interval := defaultHealthCheckInterval
 	if component.Spec.HealthCheckIntervalSeconds > 0 {
 		interval = time.Duration(component.Spec.HealthCheckIntervalSeconds) * time.Second
@@ -121,19 +120,18 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	return result, err
 }
 
-// setStatus patches the CosmoComponent status with the result of a health check.
 func (c *Controller) setStatus(
 	ctx context.Context,
 	component *registry.CosmoComponent,
-	status sdk.HealthStatus,
+	state pluginv1.HealthState,
+	message string,
 	capabilities []string,
 ) (reconcile.Result, error) {
 	now := metav1.Now()
-
 	patch := client.MergeFrom(component.DeepCopy())
 
-	component.Status.Health = string(status.State)
-	component.Status.Message = status.Message
+	component.Status.Health = healthStateString(state)
+	component.Status.Message = message
 	component.Status.LastChecked = &now
 	component.Status.ObservedGeneration = component.Generation
 
@@ -141,8 +139,7 @@ func (c *Controller) setStatus(
 		component.Status.Capabilities = capabilities
 	}
 
-	// set the Healthy condition following the K8s convention
-	healthy := status.State == sdk.HealthStateHealthy
+	healthy := state == pluginv1.HealthState_HEALTH_STATE_HEALTHY
 	conditionStatus := metav1.ConditionTrue
 	conditionReason := "HealthCheckPassed"
 	if !healthy {
@@ -154,7 +151,7 @@ func (c *Controller) setStatus(
 		Type:               conditionTypeHealthy,
 		Status:             conditionStatus,
 		Reason:             conditionReason,
-		Message:            status.Message,
+		Message:            message,
 		LastTransitionTime: now,
 		ObservedGeneration: component.Generation,
 	})
@@ -166,11 +163,22 @@ func (c *Controller) setStatus(
 	return reconcile.Result{}, nil
 }
 
-// setCondition upserts a condition in the conditions slice.
+func healthStateString(state pluginv1.HealthState) string {
+	switch state {
+	case pluginv1.HealthState_HEALTH_STATE_HEALTHY:
+		return "healthy"
+	case pluginv1.HealthState_HEALTH_STATE_DEGRADED:
+		return "degraded"
+	case pluginv1.HealthState_HEALTH_STATE_UNHEALTHY:
+		return "unhealthy"
+	default:
+		return "unknown"
+	}
+}
+
 func setCondition(conditions *[]metav1.Condition, newCondition metav1.Condition) {
 	for i, existing := range *conditions {
 		if existing.Type == newCondition.Type {
-			// preserve LastTransitionTime if status did not change
 			if existing.Status == newCondition.Status {
 				newCondition.LastTransitionTime = existing.LastTransitionTime
 			}
