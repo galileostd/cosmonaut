@@ -15,10 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/galileostd/cosmonaut/control-plane/internal/api"
-	"github.com/galileostd/cosmonaut/control-plane/internal/health"
-	"github.com/galileostd/cosmonaut/control-plane/internal/plugin"
-	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
+	"github.com/galileostd/cosmonaut/internal/api"
+	"github.com/galileostd/cosmonaut/internal/health"
+	"github.com/galileostd/cosmonaut/internal/plugin"
+	"github.com/galileostd/cosmonaut/internal/registry"
 )
 
 var scheme = runtime.NewScheme()

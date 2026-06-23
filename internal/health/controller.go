@@ -14,8 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
-	"github.com/galileostd/cosmonaut/control-plane/internal/plugin"
-	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
+	"github.com/galileostd/cosmonaut/internal/plugin"
+	"github.com/galileostd/cosmonaut/internal/registry"
 )
 
 const (

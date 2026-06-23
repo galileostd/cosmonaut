@@ -11,7 +11,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/galileostd/cosmonaut/control-plane/internal/plugin"
+	"github.com/galileostd/cosmonaut/internal/plugin"
 )
 
 // Config holds the API server configuration.

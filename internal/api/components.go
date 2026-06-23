@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
-	"github.com/galileostd/cosmonaut/control-plane/internal/registry"
+	"github.com/galileostd/cosmonaut/internal/registry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
