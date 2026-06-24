@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
@@ -40,10 +42,26 @@ type Controller struct {
 func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&registry.CosmoComponent{}).
+		// ignore status-only updates to avoid reconciliation loops
+		// when we patch the status, it should not trigger a new reconciliation
+		WithEventFilter(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+			},
+		}).
 		Complete(c)
 }
 
-// Reconcile is called whenever a CosmoComponent is created, updated, or deleted.
+// requeueAfter returns the requeue interval for a component.
+func requeueAfter(component *registry.CosmoComponent) time.Duration {
+	if component.Spec.HealthCheckIntervalSeconds > 0 {
+		return time.Duration(component.Spec.HealthCheckIntervalSeconds) * time.Second
+	}
+	return defaultHealthCheckInterval
+}
+
+// Reconcile is called whenever a CosmoComponent spec is created or updated.
+// It also runs periodically via RequeueAfter for health checks.
 func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := slog.With("component", req.NamespacedName)
 
@@ -55,13 +73,19 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("fetching CosmoComponent: %w", err)
 	}
 
+	interval := requeueAfter(&component)
+
 	pluginClient := c.Plugins.Get(component.Spec.Plugin)
 	if pluginClient == nil {
 		log.Warn("no plugin registered for component", "plugin", component.Spec.Plugin)
-		return c.setStatus(ctx, &component, pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
+		if err := c.setStatus(ctx, &component,
+			pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
 			fmt.Sprintf("plugin %q is not registered in this control plane", component.Spec.Plugin),
 			nil,
-		)
+		); err != nil {
+			return reconcile.Result{RequeueAfter: interval}, err
+		}
+		return reconcile.Result{RequeueAfter: interval}, nil
 	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
@@ -77,15 +101,19 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	resp, err := pluginClient.HealthCheck(checkCtx, sdkComponent)
 	if err != nil {
 		log.Error("health check error", "plugin", component.Spec.Plugin, "err", err)
-		return c.setStatus(ctx, &component, pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
+		if setErr := c.setStatus(ctx, &component,
+			pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
 			fmt.Sprintf("health check failed: %v", err),
 			nil,
-		)
+		); setErr != nil {
+			return reconcile.Result{RequeueAfter: interval}, setErr
+		}
+		return reconcile.Result{RequeueAfter: interval}, nil
 	}
 
 	log.Info("health check complete",
 		"plugin", component.Spec.Plugin,
-		"state", resp.State,
+		"state", healthStateString(resp.State),
 		"message", resp.Message,
 	)
 
@@ -93,7 +121,7 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		c.EventBus.PublishHealthChanged(
 			component.Namespace,
 			component.Name,
-			resp.State.String(),
+			healthStateString(resp.State),
 			resp.Message,
 		)
 	}
@@ -101,23 +129,19 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// collect capabilities on healthy state
 	var capabilities []string
 	if resp.State == pluginv1.HealthState_HEALTH_STATE_HEALTHY {
-		desc, err := pluginClient.Describe(checkCtx)
-		if err == nil {
+		desc, descErr := pluginClient.Describe(checkCtx)
+		if descErr == nil {
 			for _, cap := range desc.Capabilities {
 				capabilities = append(capabilities, cap.Type)
 			}
 		}
 	}
 
-	result, err := c.setStatus(ctx, &component, resp.State, resp.Message, capabilities)
-
-	interval := defaultHealthCheckInterval
-	if component.Spec.HealthCheckIntervalSeconds > 0 {
-		interval = time.Duration(component.Spec.HealthCheckIntervalSeconds) * time.Second
+	if err := c.setStatus(ctx, &component, resp.State, resp.Message, capabilities); err != nil {
+		return reconcile.Result{RequeueAfter: interval}, err
 	}
-	result.RequeueAfter = interval
 
-	return result, err
+	return reconcile.Result{RequeueAfter: interval}, nil
 }
 
 func (c *Controller) setStatus(
@@ -126,7 +150,7 @@ func (c *Controller) setStatus(
 	state pluginv1.HealthState,
 	message string,
 	capabilities []string,
-) (reconcile.Result, error) {
+) error {
 	now := metav1.Now()
 	patch := client.MergeFrom(component.DeepCopy())
 
@@ -157,10 +181,10 @@ func (c *Controller) setStatus(
 	})
 
 	if err := c.Status().Patch(ctx, component, patch); err != nil {
-		return reconcile.Result{}, fmt.Errorf("patching CosmoComponent status: %w", err)
+		return fmt.Errorf("patching CosmoComponent status: %w", err)
 	}
 
-	return reconcile.Result{}, nil
+	return nil
 }
 
 func healthStateString(state pluginv1.HealthState) string {
