@@ -1,0 +1,98 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+@theme {
+  /* paleta núcleo */
+  --color-red:         #C8102E;
+  --color-red-deep:    #8B0A1F;
+  --color-red-soft:    #3A1418;
+  --color-ink:         #141414;
+  --color-paper:       #F4F1E8;
+  --color-paper-2:     #ECE8DC;
+  --color-ocher:       #B8862A;
+  --color-ok:          #2F6B3A;
+  --color-ok-soft:     #1A2A1C;
+  --color-warn:        #B8762B;
+  --color-warn-soft:   #2A1F12;
+  --color-info:        #2C5982;
+  --color-info-soft:   #15212E;
+
+  /* fontes */
+  --font-sans:   'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Inter Tight', 'Inter', sans-serif;
+  --font-mono:   'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ── CSS variables de tema (dark/light) ──────────────────────── */
+:root {
+  --bg-base:     #F4F1E8;
+  --bg-elev:     #FFFFFE;
+  --bg-soft:     #ECE8DC;
+  --bg-sunk:     #DFDBCD;
+  --bg-deep:     #141414;
+  --fg:          #141414;
+  --fg-2:        #3A3A38;
+  --fg-soft:     #5A5A56;
+  --fg-mute:     #8A857A;
+  --fg-faint:    #B8B3A5;
+  --line:        #1414141A;
+  --line-2:      #14141433;
+  --line-bold:   #141414;
+  --on-deep:     #F4F1E8;
+  --red:         #C8102E;
+  --red-deep:    #8B0A1F;
+  --red-soft:    #F4D6DC;
+  --ok:          #2F6B3A;
+  --ok-soft:     #D8E5D9;
+  --warn:        #B8762B;
+  --warn-soft:   #F0E0CC;
+  --ocher:       #B8862A;
+  --info:        #2C5982;
+  --info-soft:   #D5E0EC;
+}
+
+[data-theme="dark"] {
+  --bg-base:     #0B0B0A;
+  --bg-elev:     #141413;
+  --bg-soft:     #1A1A18;
+  --bg-sunk:     #050504;
+  --bg-deep:     #050504;
+  --fg:          #ECE8DC;
+  --fg-2:        #C4C0B2;
+  --fg-soft:     #8A857A;
+  --fg-mute:     #6A655A;
+  --fg-faint:    #3A3833;
+  --line:        #ECE8DC1A;
+  --line-2:      #ECE8DC33;
+  --line-bold:   #ECE8DC66;
+  --on-deep:     #ECE8DC;
+  --red-soft:    #3A1418;
+  --ok-soft:     #1A2A1C;
+  --warn-soft:   #2A1F12;
+  --info-soft:   #15212E;
+}
+
+/* ── reset / base ────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  height: 100%;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* sidebar sempre escura independente do tema */
+.sidebar {
+  background: #050504 !important;
+  color: #ECE8DC;
+}
