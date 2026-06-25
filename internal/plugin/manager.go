@@ -83,6 +83,23 @@ func (m *Manager) Unregister(name string) {
 	}
 }
 
+
+// UnregisterByService removes a plugin by looking up the Service name.
+// This is necessary because when the Service is deleted, we no longer have access to its labels.
+func (m *Manager) UnregisterByService(serviceName, namespace string) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    for name, e := range m.plugins {
+        if e.info.ServiceName == serviceName && e.info.Namespace == namespace {
+            _ = e.client.Close()
+            delete(m.plugins, name)
+            slog.Info("plugin unregistered by service", "name", name, "service", serviceName)
+            return
+        }
+    }
+}
+
 // Get returns the gRPC client for a plugin by name.
 // Returns nil if the plugin is not registered.
 func (m *Manager) Get(name string) *sdkclient.Client {
@@ -160,6 +177,8 @@ func (m *Manager) Names() []string {
 	}
 	return names
 }
+
+
 
 // PluginDetail combines plugin info with its describe response.
 type PluginDetail struct {

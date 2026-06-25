@@ -48,7 +48,6 @@ spec:
               required:
                 - plugin
                 - type
-                - endpoint
               properties:
                 plugin:
                   type: string
@@ -62,7 +61,6 @@ spec:
                     (e.g. query-engine, processing, orchestration, storage).
                 endpoint:
                   type: string
-                  pattern: '^https?://'
                   description: Base URL to reach this component.
                 healthCheckIntervalSeconds:
                   type: integer

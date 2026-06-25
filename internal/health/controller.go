@@ -9,6 +9,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -42,8 +44,6 @@ type Controller struct {
 func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&registry.CosmoComponent{}).
-		// ignore status-only updates to avoid reconciliation loops
-		// when we patch the status, it should not trigger a new reconciliation
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
@@ -60,8 +60,8 @@ func requeueAfter(component *registry.CosmoComponent) time.Duration {
 	return defaultHealthCheckInterval
 }
 
-// Reconcile is called whenever a CosmoComponent spec is created or updated.
-// It also runs periodically via RequeueAfter for health checks.
+// Reconcile is called whenever a CosmoComponent spec is created or updated,
+// and periodically via RequeueAfter for health checks.
 func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := slog.With("component", req.NamespacedName)
 
@@ -78,7 +78,7 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	pluginClient := c.Plugins.Get(component.Spec.Plugin)
 	if pluginClient == nil {
 		log.Warn("no plugin registered for component", "plugin", component.Spec.Plugin)
-		if err := c.setStatus(ctx, &component,
+		if err := c.setStatus(ctx, req.NamespacedName,
 			pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
 			fmt.Sprintf("plugin %q is not registered in this control plane", component.Spec.Plugin),
 			nil,
@@ -101,7 +101,7 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	resp, err := pluginClient.HealthCheck(checkCtx, sdkComponent)
 	if err != nil {
 		log.Error("health check error", "plugin", component.Spec.Plugin, "err", err)
-		if setErr := c.setStatus(ctx, &component,
+		if setErr := c.setStatus(ctx, req.NamespacedName,
 			pluginv1.HealthState_HEALTH_STATE_UNKNOWN,
 			fmt.Sprintf("health check failed: %v", err),
 			nil,
@@ -126,7 +126,6 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		)
 	}
 
-	// collect capabilities on healthy state
 	var capabilities []string
 	if resp.State == pluginv1.HealthState_HEALTH_STATE_HEALTHY {
 		desc, descErr := pluginClient.Describe(checkCtx)
@@ -137,54 +136,70 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 	}
 
-	if err := c.setStatus(ctx, &component, resp.State, resp.Message, capabilities); err != nil {
+	if err := c.setStatus(ctx, req.NamespacedName, resp.State, resp.Message, capabilities); err != nil {
 		return reconcile.Result{RequeueAfter: interval}, err
 	}
 
 	return reconcile.Result{RequeueAfter: interval}, nil
 }
 
+// setStatus updates the CosmoComponent status with retry on conflict.
+// Re-fetches the object before each attempt to ensure the resourceVersion is current.
 func (c *Controller) setStatus(
-	ctx context.Context,
-	component *registry.CosmoComponent,
-	state pluginv1.HealthState,
-	message string,
-	capabilities []string,
+    ctx context.Context,
+    key types.NamespacedName,
+    state pluginv1.HealthState,
+    message string,
+    capabilities []string,
 ) error {
-	now := metav1.Now()
-	patch := client.MergeFrom(component.DeepCopy())
+    return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+        var current registry.CosmoComponent
+        if err := c.Get(ctx, key, &current); err != nil {
+            return fmt.Errorf("fetching CosmoComponent for status update: %w", err)
+        }
 
-	component.Status.Health = healthStateString(state)
-	component.Status.Message = message
-	component.Status.LastChecked = &now
-	component.Status.ObservedGeneration = component.Generation
+        now := metav1.Now()
+        current.Status.Health = healthStateString(state)
+        current.Status.Message = message
+        current.Status.LastChecked = &now
+        current.Status.ObservedGeneration = current.Generation
 
-	if capabilities != nil {
-		component.Status.Capabilities = capabilities
-	}
+        if capabilities != nil {
+            current.Status.Capabilities = capabilities
+        }
 
-	healthy := state == pluginv1.HealthState_HEALTH_STATE_HEALTHY
-	conditionStatus := metav1.ConditionTrue
-	conditionReason := "HealthCheckPassed"
-	if !healthy {
-		conditionStatus = metav1.ConditionFalse
-		conditionReason = "HealthCheckFailed"
-	}
+        healthy := state == pluginv1.HealthState_HEALTH_STATE_HEALTHY
+        conditionStatus := metav1.ConditionTrue
+        conditionReason := "HealthCheckPassed"
+        if !healthy {
+            conditionStatus = metav1.ConditionFalse
+            conditionReason = "HealthCheckFailed"
+        }
 
-	setCondition(&component.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeHealthy,
-		Status:             conditionStatus,
-		Reason:             conditionReason,
-		Message:            message,
-		LastTransitionTime: now,
-		ObservedGeneration: component.Generation,
-	})
+        setCondition(&current.Status.Conditions, metav1.Condition{
+            Type:               conditionTypeHealthy,
+            Status:             conditionStatus,
+            Reason:             conditionReason,
+            Message:            message,
+            LastTransitionTime: now,
+            ObservedGeneration: current.Generation,
+        })
 
-	if err := c.Status().Patch(ctx, component, patch); err != nil {
-		return fmt.Errorf("patching CosmoComponent status: %w", err)
-	}
+        if err := c.Status().Update(ctx, &current); err != nil {
+            slog.Error("failed to update status",
+                "component", key.Name,
+                "health", current.Status.Health,
+                "err", err,
+            )
+            return err
+        }
 
-	return nil
+        slog.Info("status updated",
+            "component", key.Name,
+            "health", current.Status.Health,
+        )
+        return nil
+    })
 }
 
 func healthStateString(state pluginv1.HealthState) string {

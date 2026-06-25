@@ -66,49 +66,50 @@ func (d *DiscoveryController) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile handles Service create/update/delete events.
 func (d *DiscoveryController) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	log := slog.With("service", req.NamespacedName)
+    log := slog.With("service", req.NamespacedName)
 
-	var svc corev1.Service
-	if err := d.Get(ctx, req.NamespacedName, &svc); err != nil {
-		if errors.IsNotFound(err) {
-			// service was deleted — unregister by service name
+    var svc corev1.Service
+    if err := d.Get(ctx, req.NamespacedName, &svc); err != nil {
+        if errors.IsNotFound(err) {
+            // service was deleted — unregister by service name
 			// we use the request name as a best-effort plugin name
-			d.Manager.Unregister(req.Name)
-			return reconcile.Result{}, nil
-		}
-		return reconcile.Result{}, fmt.Errorf("fetching Service: %w", err)
-	}
+            d.Manager.Unregister(req.Name)                          
+            d.Manager.UnregisterByService(req.Name, req.Namespace)
+            return reconcile.Result{}, nil
+        }
+        return reconcile.Result{}, fmt.Errorf("fetching Service: %w", err)
+    }
 
 	// if the label was removed, unregister
-	if !isPluginService(svc.Labels) {
-		d.Manager.Unregister(pluginName(svc))
-		return reconcile.Result{}, nil
-	}
+    if !isPluginService(svc.Labels) {
+        d.Manager.Unregister(pluginName(svc))
+        return reconcile.Result{}, nil
+    }
 
 	// build the gRPC endpoint
-	port := svc.Annotations[AnnotationPluginPort]
-	if port == "" {
-		port = defaultPluginPort
-	}
+    port := svc.Annotations[AnnotationPluginPort]
+    if port == "" {
+        port = defaultPluginPort
+    }
 
-	endpoint := fmt.Sprintf("%s.%s.svc.cluster.local:%s",
-		svc.Name, svc.Namespace, port,
-	)
+    endpoint := fmt.Sprintf("%s.%s.svc.cluster.local:%s",
+        svc.Name, svc.Namespace, port,
+    )
 
-	info := PluginInfo{
-		Name:        pluginName(svc),
-		Endpoint:    endpoint,
-		Namespace:   svc.Namespace,
-		ServiceName: svc.Name,
-	}
+    info := PluginInfo{
+        Name:        pluginName(svc),
+        Endpoint:    endpoint,
+        Namespace:   svc.Namespace,
+        ServiceName: svc.Name,
+    }
 
-	if err := d.Manager.Register(info); err != nil {
-		log.Error("failed to register plugin", "name", info.Name, "endpoint", endpoint, "err", err)
+    if err := d.Manager.Register(info); err != nil {
+        log.Error("failed to register plugin", "name", info.Name, "endpoint", endpoint, "err", err)
 		// don't requeue — registration will be retried on next Service update
-		return reconcile.Result{}, nil
-	}
+        return reconcile.Result{}, nil
+    }
 
-	return reconcile.Result{}, nil
+    return reconcile.Result{}, nil
 }
 
 // isPluginService returns true if the labels contain the plugin marker.
