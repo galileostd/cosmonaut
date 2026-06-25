@@ -16,9 +16,12 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/galileostd/cosmonaut/internal/api"
+	"github.com/galileostd/cosmonaut/internal/db"  
 	"github.com/galileostd/cosmonaut/internal/health"
 	"github.com/galileostd/cosmonaut/internal/plugin"
 	"github.com/galileostd/cosmonaut/internal/registry"
+	"github.com/galileostd/cosmonaut/internal/ui"
+
 )
 
 var scheme = runtime.NewScheme()
@@ -33,6 +36,30 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(envOr("COSMONAUT_DEV", "") == "true")))
 
 	slog.Info("starting cosmonaut control plane", "version", api.BuildVersion)
+
+	dbCfg := &db.Config{
+		Driver:   envOr("COSMONAUT_DB_DRIVER", "cockroachdb"),
+		Host:     envOr("COSMONAUT_DB_HOST", "localhost"),
+		Port:     envOr("COSMONAUT_DB_PORT", "26257"),
+		User:     envOr("COSMONAUT_DB_USER", "root"),
+		Password: envOr("COSMONAUT_DB_PASSWORD", ""),
+		Database: envOr("COSMONAUT_DB_NAME", "cosmonaut"),
+		SSLMode:  envOr("COSMONAUT_DB_SSL_MODE", "disable"),
+		Debug:    envOr("COSMONAUT_DB_DEBUG", "false") == "true",
+	}
+
+	dbConn, err := db.Connect(dbCfg)
+	if err != nil {
+		slog.Error("failed to connect to database", "err", err)
+		os.Exit(1)
+	}
+
+	if err := db.AutoMigrate(dbConn); err != nil {
+		slog.Error("failed to run database migrations", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("database connected", "driver", dbCfg.Driver, "host", dbCfg.Host)
+
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -61,7 +88,19 @@ func main() {
 		},
 		CORSAllowedOrigins: envOr("COSMONAUT_CORS_ORIGINS", "*"),
 		RequestTimeout:     60 * time.Second,
+		DB:                 dbConn,
 	}, mgr.GetClient(), pluginManager)
+
+
+	uiFS, err := ui.GetFS()
+
+	if err != nil {
+		slog.Error("failed to get UI FS", "err", err)
+		os.Exit(1)
+	}
+	
+	apiServer.SetUI(uiFS)
+
 
 	// health controller
 	if err := (&health.Controller{

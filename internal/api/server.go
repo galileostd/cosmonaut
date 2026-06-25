@@ -3,12 +3,16 @@ package api
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"gorm.io/gorm"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/galileostd/cosmonaut/internal/plugin"
@@ -20,6 +24,8 @@ type Config struct {
 	OIDC               OIDCConfig
 	CORSAllowedOrigins string
 	RequestTimeout     time.Duration
+	DB                 *gorm.DB
+	UIFS               http.FileSystem
 }
 
 func (c *Config) defaults() {
@@ -41,6 +47,8 @@ type Server struct {
 	plugins *plugin.Manager
 	jobs    *JobStore
 	events  *EventBus
+	db      *gorm.DB
+	uiFS    http.FileSystem
 	http    *http.Server
 }
 
@@ -54,6 +62,8 @@ func New(cfg Config, k8s client.Client, plugins *plugin.Manager) *Server {
 		plugins: plugins,
 		jobs:    newJobStore(),
 		events:  newEventBus(),
+		db:      cfg.DB,
+		uiFS:    cfg.UIFS,
 	}
 
 	s.http = &http.Server{
@@ -99,6 +109,11 @@ func (s *Server) NeedLeaderElection() bool {
 	return false
 }
 
+// SetUI defines the filesystem to serve static UI files.
+func (s *Server) SetUI(fsys fs.FS) {
+	s.uiFS = http.FS(fsys)
+}
+
 // routes builds and returns the chi router.
 func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
@@ -134,5 +149,49 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/v1/events", s.handleEvents)
 	})
 
+	// UI - serve static files
+	if s.uiFS != nil {
+		r.Get("/*", s.handleUI)
+	}
+
 	return r
+}
+
+// handleUI serves the static UI files.
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	requestPath := r.URL.Path
+	if requestPath == "" || requestPath == "/" {
+		requestPath = "/index.html"
+	}
+
+	file, err := s.uiFS.Open(path.Clean(requestPath))
+	if err != nil {
+		if strings.Contains(err.Error(), "file does not exist") || strings.Contains(err.Error(), "not found") {
+			indexFile, err := s.uiFS.Open("/index.html")
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer indexFile.Close()
+
+			stat, _ := indexFile.Stat()
+			http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if strings.Contains(requestPath, ".") {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
+
+	http.ServeContent(w, r, path.Base(requestPath), stat.ModTime(), file)
 }

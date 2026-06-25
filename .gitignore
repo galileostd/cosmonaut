@@ -11,6 +11,7 @@ control-plane/control-plane
 
 # Go
 /vendor/
+bin/
 go.sum
 *.mod
 

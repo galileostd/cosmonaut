@@ -1,8 +1,13 @@
 FROM golang:1.26-alpine AS builder
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git nodejs npm
 
 WORKDIR /build
+
+COPY ui/ ./ui/
+RUN cd ui && npm install && npm run build
+
+RUN mkdir -p internal/ui/build && cp -r ui/build/* internal/ui/build/
 
 COPY go.mod go.sum ./
 RUN GOPRIVATE="github.com/galileostd/*" go mod download

@@ -256,9 +256,7 @@
 					</div>
 					<div class="field">
 						<span class="lbl">Parameters</span>
-						<textarea>{
-
-}</textarea>
+						<textarea>{`{}`}</textarea>
 					</div>
 				</div>
 				<div class="execute-panel">
