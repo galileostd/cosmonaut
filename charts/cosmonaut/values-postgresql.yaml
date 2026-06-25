@@ -1,0 +1,11 @@
+database:
+  driver: "postgres"
+  host: "cosmonaut-postgresql"
+  port: 5432
+  user: "cosmonaut"
+  password: "changeme"
+  database: "cosmonaut"
+  sslMode: "disable"
+
+postgres:
+  enabled: true

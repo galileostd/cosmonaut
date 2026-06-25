@@ -1,0 +1,18 @@
+database:
+  driver: "aurora"
+  host: "aurora-cluster.cluster-xxxxx.us-east-1.rds.amazonaws.com"
+  port: 5432
+  user: "cosmonaut"
+  password: "your-password"
+  database: "cosmonaut"
+  sslMode: "require"
+
+aurora:
+  enabled: true
+  region: "us-east-1"
+
+cockroachdb:
+  enabled: false
+
+postgres:
+  enabled: false

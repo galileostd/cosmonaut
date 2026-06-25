@@ -1,3 +1,8 @@
+# charts/cosmonaut/values.yaml
+
+# ------------------------------------------------------------------------------
+# Core Application
+# ------------------------------------------------------------------------------
 replicaCount: 1
 
 image:
@@ -8,12 +13,16 @@ image:
 # Set to "true" for development — enables verbose logging
 dev: "true"
 
-auth:
-  enabled: false
-  oidc:
-    issuerURL: ""
-    clientID: "cosmonaut"
+# ------------------------------------------------------------------------------
+# Service
+# ------------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
 
+# ------------------------------------------------------------------------------
+# Resources
+# ------------------------------------------------------------------------------
 resources:
   requests:
     cpu: 100m
@@ -21,3 +30,107 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# ------------------------------------------------------------------------------
+# Auth
+# ------------------------------------------------------------------------------
+auth:
+  enabled: false
+  oidc:
+    issuerURL: ""
+    clientID: "cosmonaut"
+
+# ------------------------------------------------------------------------------
+# Database Configuration
+# ------------------------------------------------------------------------------
+database:
+  # Driver: cockroachdb | postgres | aurora | cloudsql | azure
+  driver: "cockroachdb"
+  
+  # Connection details (overridden by specific values files)
+  host: ""
+  port: ""
+  user: ""
+  password: ""
+  database: "cosmonaut"
+  sslMode: "disable"
+  
+  # Connection pool
+  maxOpenConns: 100
+  maxIdleConns: 10
+  connMaxLifetime: "1h"
+  debug: false
+
+# ------------------------------------------------------------------------------
+# Embedded Databases (enabled only if database.driver matches)
+# ------------------------------------------------------------------------------
+
+# CockroachDB - enabled when database.driver == "cockroachdb"
+cockroachdb:
+  enabled: false
+  statefulset:
+    replicas: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+  storage:
+    size: 10Gi
+    class: standard
+
+# PostgreSQL - enabled when database.driver == "postgres"
+postgres:
+  enabled: false
+  host: "postgres-postgresql"
+  port: 5432
+  database: "cosmonaut"
+  user: "cosmonaut"
+  password: "changeme"
+  sslMode: "disable"
+
+# ------------------------------------------------------------------------------
+# External Cloud Databases (enabled only when database.driver matches)
+# ------------------------------------------------------------------------------
+
+# AWS Aurora - enabled when database.driver == "aurora"
+aurora:
+  enabled: false
+  host: ""                           # Required: Aurora cluster endpoint
+  port: 5432
+  database: "cosmonaut"
+  user: ""                           # Required
+  password: ""                       # Required
+  sslMode: "require"
+  region: "us-east-1"                # AWS region
+
+# GCP Cloud SQL - enabled when database.driver == "cloudsql"
+cloudsql:
+  enabled: false
+  instanceConnectionName: ""         # Required: project:region:instance
+  host: "localhost"                  # Cloud SQL proxy runs locally
+  port: 5432
+  database: "cosmonaut"
+  user: ""                           # Required
+  password: ""                       # Required
+  sslMode: "require"
+
+# Azure PostgreSQL - enabled when database.driver == "azure"
+azure:
+  enabled: false
+  host: ""                           # Required: server.postgres.database.azure.com
+  port: 5432
+  database: "cosmonaut"
+  user: ""                           # Required
+  password: ""                       # Required
+  sslMode: "require"
+
+# ------------------------------------------------------------------------------
+# ServiceAccount & RBAC
+# ------------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""

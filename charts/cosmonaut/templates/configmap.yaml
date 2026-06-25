@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cosmonaut.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cosmonaut.labels" . | nindent 4 }}
+data:
+  COSMONAUT_DB_DRIVER: {{ .Values.database.driver }}
+  COSMONAUT_DB_DATABASE: {{ .Values.database.database }}
+  COSMONAUT_DB_SSL_MODE: {{ .Values.database.sslMode }}
+  COSMONAUT_DB_MAX_OPEN_CONNS: {{ .Values.database.maxOpenConns | quote }}
+  COSMONAUT_DB_MAX_IDLE_CONNS: {{ .Values.database.maxIdleConns | quote }}
+  COSMONAUT_DB_CONN_MAX_LIFETIME: {{ .Values.database.connMaxLifetime }}
+  COSMONAUT_DB_DEBUG: {{ .Values.database.debug | quote }}
+  
+  {{- if eq .Values.database.driver "cockroachdb" }}
+  COSMONAUT_DB_HOST: {{ .Values.database.host }}
+  COSMONAUT_DB_PORT: {{ .Values.database.port | quote }}
+  {{- else if eq .Values.database.driver "postgres" }}
+  COSMONAUT_DB_HOST: {{ .Values.postgres.host }}
+  COSMONAUT_DB_PORT: {{ .Values.postgres.port | quote }}
+  {{- else if eq .Values.database.driver "aurora" }}
+  COSMONAUT_DB_HOST: {{ .Values.aurora.host }}
+  COSMONAUT_DB_PORT: {{ .Values.aurora.port | quote }}
+  COSMONAUT_AURORA_REGION: {{ .Values.aurora.region }}
+  {{- else if eq .Values.database.driver "cloudsql" }}
+  COSMONAUT_DB_HOST: {{ .Values.cloudsql.host }}
+  COSMONAUT_DB_PORT: {{ .Values.cloudsql.port | quote }}
+  COSMONAUT_CLOUDSQL_INSTANCE: {{ .Values.cloudsql.instanceConnectionName }}
+  {{- else if eq .Values.database.driver "azure" }}
+  COSMONAUT_DB_HOST: {{ .Values.azure.host }}
+  COSMONAUT_DB_PORT: {{ .Values.azure.port | quote }}
+  {{- end }}

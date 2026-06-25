@@ -1,0 +1,18 @@
+database:
+  driver: "cloudsql"
+  host: "localhost"  # Cloud SQL proxy
+  port: 5432
+  user: "cosmonaut"
+  password: "your-secure-password"
+  database: "cosmonaut"
+  sslMode: "require"
+
+cloudsql:
+  enabled: true
+  instanceConnectionName: "my-project:us-central1:my-instance"
+
+cockroachdb:
+  enabled: false
+
+postgres:
+  enabled: false

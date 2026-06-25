@@ -1,0 +1,15 @@
+database:
+  driver: "cockroachdb"
+  host: "cosmonaut-cockroachdb"
+  port: 26257
+  user: "root"
+  password: ""
+  database: "cosmonaut"
+  sslMode: "disable"
+
+cockroachdb:
+  enabled: true
+  statefulset:
+    replicas: 3
+  storage:
+    size: 10Gi

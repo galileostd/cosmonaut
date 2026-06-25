@@ -1,6 +1,47 @@
 apiVersion: v2
 name: cosmonaut
-description: Cosmonaut - Kubernetes-native data platform
+description: Cosmonaut - Kubernetes-native data platform control plane
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+
+keywords:
+  - data-platform
+  - kubernetes-native
+  - control-plane
+  - lakehouse
+  - data-engineering
+  - spark
+  - trino
+  - flink
+  - polaris
+  - cockroachdb
+  - postgresql
+
+home: https://github.com/galileostd/cosmonaut
+sources:
+  - https://github.com/galileostd/cosmonaut
+maintainers:
+  - name: Galileostd
+    email: team@galileostd.io
+
+dependencies:
+  # CockroachDB - embedded database for K8s-native (default)
+  - name: cockroachdb
+    version: "12.0.0"
+    repository: "https://charts.cockroachdb.com/"
+    condition: cockroachdb.enabled
+    tags:
+      - database
+      - cockroachdb
+      - embedded
+
+  # PostgreSQL - embedded PostgreSQL (dev/test)
+  - name: postgresql
+    version: "15.5.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgres.enabled
+    tags:
+      - database
+      - postgresql
+      - embedded

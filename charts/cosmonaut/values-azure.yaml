@@ -1,0 +1,17 @@
+database:
+  driver: "azure"
+  host: "cosmonaut.postgres.database.azure.com"
+  port: 5432
+  user: "cosmonaut"
+  password: "your-secure-password"
+  database: "cosmonaut"
+  sslMode: "require"
+
+azure:
+  enabled: true
+
+cockroachdb:
+  enabled: false
+
+postgres:
+  enabled: false
