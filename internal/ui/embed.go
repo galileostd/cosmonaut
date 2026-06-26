@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-//go:embed all:build/*
+//go:embed all:build
 var BuildFS embed.FS
 
 func GetFS() (fs.FS, error) {

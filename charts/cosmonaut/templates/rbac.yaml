@@ -13,6 +13,16 @@ rules:
     resources: ["cosmocomponents/status"]
     verbs: ["get", "update", "patch"]
 
+  # Nodes — for cluster metrics
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Pods — for job metrics
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
   # Services — watch all namespaces for plugin discovery
   - apiGroups: [""]
     resources: ["services"]

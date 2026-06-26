@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"gorm.io/gorm"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/galileostd/cosmonaut/internal/plugin"
@@ -42,30 +43,32 @@ func (c *Config) defaults() {
 
 // Server is the Cosmonaut API server.
 type Server struct {
-	cfg     Config
-	k8s     client.Client
-	plugins *plugin.Manager
-	jobs    *JobStore
-	sessions *sessionStore
-	events  *EventBus
-	db      *gorm.DB
-	uiFS    http.FileSystem
-	http    *http.Server
+	cfg        Config
+	k8s        client.Client
+	restConfig *rest.Config
+	plugins    *plugin.Manager
+	jobs       *JobStore
+	sessions   *sessionStore
+	events     *EventBus
+	db         *gorm.DB
+	uiFS       http.FileSystem
+	http       *http.Server
 }
 
 // New creates a new API Server.
-func New(cfg Config, k8s client.Client, plugins *plugin.Manager) *Server {
+func New(cfg Config, k8s client.Client, restConfig *rest.Config, plugins *plugin.Manager) *Server {
 	cfg.defaults()
 
 	s := &Server{
-		cfg:      cfg,
-		k8s:      k8s,
-		plugins:  plugins,
-		jobs:     newJobStore(),
-		sessions: newSessionStore(),
-		events:   newEventBus(),
-		db:       cfg.DB,
-		uiFS:     cfg.UIFS,
+		cfg:        cfg,
+		k8s:        k8s,
+		restConfig: restConfig,
+		plugins:    plugins,
+		jobs:       newJobStore(),
+		sessions:   newSessionStore(),
+		events:     newEventBus(),
+		db:         cfg.DB,
+		uiFS:       cfg.UIFS,
 	}
 
 	if s.uiFS == nil {
@@ -138,39 +141,50 @@ func (s *Server) routes() http.Handler {
 	r.Use(middlewareTimeout(s.cfg.RequestTimeout))
 	r.Use(chimiddleware.StripSlashes)
 
-	r.Get("/api/v1/system/health", s.handleHealth)
-	r.Get("/api/v1/system/version", s.handleVersion)
+	// ─── ROTAS DA API ──────────────────────────────────────────────
+	r.Route("/api/v1", func(r chi.Router) {
+		// Rotas públicas
+		r.Get("/system/health", s.handleHealth)
+		r.Get("/system/version", s.handleVersion)
+		r.Get("/cluster", s.handleCluster)
 
-	r.Post("/api/v1/auth/login", s.handleLogin)
-	r.Post("/api/v1/auth/logout", s.handleLogout)
-	r.Get("/api/v1/auth/me", s.handleMe)
+		r.Post("/auth/login", s.handleLogin)
+		r.Post("/auth/logout", s.handleLogout)
+		r.Get("/auth/me", s.handleMe)
 
-	r.Group(func(r chi.Router) {
-		r.Use(middlewareOIDC(s.cfg.OIDC))
+		// Rotas com autenticação
+		r.Group(func(r chi.Router) {
+			r.Use(middlewareOIDC(s.cfg.OIDC))
 
-		r.Get("/api/v1/components", s.handleListComponents)
-		r.Post("/api/v1/components", s.handleCreateComponent)
-		r.Get("/api/v1/components/{namespace}/{name}", s.handleGetComponent)
-		r.Delete("/api/v1/components/{namespace}/{name}", s.handleDeleteComponent)
-		r.Post("/api/v1/components/{namespace}/{name}/exec", s.handleExecComponent)
+			r.Get("/components", s.handleListComponents)
+			r.Post("/components", s.handleCreateComponent)
+			r.Get("/components/{namespace}/{name}", s.handleGetComponent)
+			r.Delete("/components/{namespace}/{name}", s.handleDeleteComponent)
+			r.Post("/components/{namespace}/{name}/exec", s.handleExecComponent)
 
-		r.Get("/api/v1/jobs", s.handleListJobs)
-		r.Get("/api/v1/jobs/{id}", s.handleGetJob)
-		r.Delete("/api/v1/jobs/{id}", s.handleCancelJob)
+			r.Get("/jobs", s.handleListJobs)
+			r.Get("/jobs/{id}", s.handleGetJob)
+			r.Delete("/jobs/{id}", s.handleCancelJob)
 
-		r.Get("/api/v1/plugins", s.handleListPlugins)
-		r.Get("/api/v1/plugins/{name}", s.handleGetPlugin)
+			r.Get("/plugins", s.handleListPlugins)
+			r.Get("/plugins/{name}", s.handleGetPlugin)
 
-		r.Get("/api/v1/events", s.handleEvents)
+			r.Get("/events", s.handleEvents)
+		})
 	})
 
 	// ─── UI ──────────────────────────────────────────────────────
 	r.Handle("/_app/*", http.FileServer(s.uiFS))
-
 	r.Handle("/favicon.ico", http.FileServer(s.uiFS))
 	r.Handle("/robots.txt", http.FileServer(s.uiFS))
 
+
 	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+
+		if strings.HasPrefix(req.URL.Path, "/api/") {
+			http.NotFound(w, req)
+			return
+		}
 		req.URL.Path = "/"
 		http.FileServer(s.uiFS).ServeHTTP(w, req)
 	}))
@@ -187,7 +201,6 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		s.uiFS = http.Dir("./ui/build")
 	}
 
-	// strip leading slash
 	cleanPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 	if cleanPath == "" || cleanPath == "." {
 		cleanPath = "index.html"
@@ -195,21 +208,25 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("Opening file", "cleanPath", cleanPath)
 
-	// Try to open the file
 	file, err := s.uiFS.Open(cleanPath)
 	if err == nil {
 		defer file.Close()
 		stat, err := file.Stat()
 		if err == nil {
-			if strings.Contains(cleanPath, ".") {
+			if strings.Contains(cleanPath, "immutable") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if strings.Contains(cleanPath, ".") {
 				w.Header().Set("Cache-Control", "public, max-age=86400")
 			}
 			http.ServeContent(w, r, path.Base(cleanPath), stat.ModTime(), file)
 			return
 		}
 	}
+	// SPA fallback
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 
-	// SPA fallback: serve index.html
 	slog.Info("File not found or error, serving index.html", "err", err)
 	indexFile, err := s.uiFS.Open("index.html")
 	if err != nil {

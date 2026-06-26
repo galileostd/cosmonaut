@@ -72,10 +72,16 @@ func main() {
 	slog.Info("embedded UI loaded")
 
 	// -----------------------------------------------------------------
+	// Kubernetes Config
+	// -----------------------------------------------------------------
+
+	k8sConfig := ctrl.GetConfigOrDie()
+
+	// -----------------------------------------------------------------
 	// Manager
 	// -----------------------------------------------------------------
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(k8sConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: envOr("COSMONAUT_METRICS_ADDR", ":9090"),
@@ -102,7 +108,7 @@ func main() {
 		RequestTimeout:     60 * time.Second,
 		DB:                 dbConn,
 		UIFS:               http.FS(uiFS),
-	}, mgr.GetClient(), pluginManager)
+	}, mgr.GetClient(), k8sConfig, pluginManager)
 
 	if err := (&health.Controller{
 		Client:   mgr.GetClient(),

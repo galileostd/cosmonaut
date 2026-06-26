@@ -39,16 +39,23 @@ step "Contexto kubectl: ${CLUSTER_NAME}"
 # ── build ─────────────────────────────────────────────────────────────────────
 
 if [ "${SKIP_BUILD}" = false ]; then
-  step "Buildando UI..."
+  # DELETA TUDO antes
+  step "Copiando UI para internal/ui/build..."
+  rm -rf internal/ui/build
+  rm -rf ui/.svelte-kit
+  rm -rf ui/node_modules/.vite
+  rm -rf ui/node_modules/.cache
+
+  # Builda limpo
   cd "${REPO_ROOT}/ui"
   npm install --silent
   npm run build
   cd "${REPO_ROOT}"
 
   step "Copiando UI para internal/ui/build..."
-#   rm -rf internal/ui/build
+  rm -rf internal/ui/build
   mkdir -p internal/ui/build
-  cp -r ui/build internal/ui/build
+  rm -rf internal/ui/build && cp -r ui/build/. internal/ui/build/
 
   step "Buildando binário Go..."
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
@@ -62,7 +69,7 @@ if [ "${SKIP_BUILD}" = false ]; then
   minikube image load "${IMAGE_NAME}:${IMAGE_TAG}" --profile="${CLUSTER_NAME}"
 
   step "Removendo build temporário..."
-#   rm -rf internal/ui/build
+  # rm -rf internal/ui/build
 fi
 
 # ── helm ──────────────────────────────────────────────────────────────────────

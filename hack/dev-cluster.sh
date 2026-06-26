@@ -1,25 +1,31 @@
-#!/usr/bin/env bash
-# Deletes any existing Minikube cluster and creates a fresh one for Cosmonaut development.
-set -euo pipefail
+#!/bin/bash
+set -e
 
-CLUSTER_NAME="cosmonaut-dev"
-K8S_VERSION="v1.29.0"
-CPUS=4
-MEMORY="8g"
+PROFILE="cosmonaut-dev"
 
-echo "==> Deleting existing cluster (if any)"
-minikube delete --profile="${CLUSTER_NAME}" 2>/dev/null || true
+echo "💀 Matando o cluster ${PROFILE}..."
+minikube delete --profile=${PROFILE} --all --purge 2>/dev/null || true
 
-echo "==> Starting fresh Minikube cluster: ${CLUSTER_NAME}"
+echo "🧹 Limpando Docker..."
+docker system prune -af --volumes 2>/dev/null || true
+
+echo "🚀 Startando ${PROFILE}..."
 minikube start \
-  --profile="${CLUSTER_NAME}" \
-  --kubernetes-version="${K8S_VERSION}" \
-  --cpus="${CPUS}" \
-  --memory="${MEMORY}" \
-  --driver=docker
+  --profile=${PROFILE} \
+  --driver=docker \
+  --cpus=6 \
+  --memory=18192 \
+  --disk-size=50g
 
-echo "==> Setting kubectl context"
-kubectl config use-context "${CLUSTER_NAME}"
+echo "🔌 Habilitando addons no ${PROFILE}..."
+minikube addons enable ingress --profile=${PROFILE}
+minikube addons enable dashboard --profile=${PROFILE}
+minikube addons enable metrics-server --profile=${PROFILE}
 
-echo "==> Cluster ready"
-kubectl get nodes
+echo "⏳ Esperando metrics-server ficar pronto..."
+kubectl wait --for=condition=ready pod -l k8s-app=metrics-server -n kube-system --timeout=120s
+
+echo "✅ ${PROFILE} pronto! Testa aí:"
+echo "   minikube status --profile=${PROFILE}"
+echo "   kubectl top nodes"
+echo "   minikube dashboard --profile=${PROFILE}"
