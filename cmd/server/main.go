@@ -1,27 +1,25 @@
-// Cosmonaut Control Plane
-// Open-source control plane for on-premises data platforms.
 package main
 
 import (
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/galileostd/cosmonaut/internal/api"
-	"github.com/galileostd/cosmonaut/internal/db"  
+	"github.com/galileostd/cosmonaut/internal/db"
 	"github.com/galileostd/cosmonaut/internal/health"
 	"github.com/galileostd/cosmonaut/internal/plugin"
 	"github.com/galileostd/cosmonaut/internal/registry"
 	"github.com/galileostd/cosmonaut/internal/ui"
-
 )
 
 var scheme = runtime.NewScheme()
@@ -58,8 +56,24 @@ func main() {
 		slog.Error("failed to run database migrations", "err", err)
 		os.Exit(1)
 	}
+
 	slog.Info("database connected", "driver", dbCfg.Driver, "host", dbCfg.Host)
 
+	// -----------------------------------------------------------------
+	// UI
+	// -----------------------------------------------------------------
+
+	uiFS, err := ui.GetFS()
+	if err != nil {
+		slog.Error("failed to load embedded UI", "err", err)
+		os.Exit(1)
+	}
+
+	slog.Info("embedded UI loaded")
+
+	// -----------------------------------------------------------------
+	// Manager
+	// -----------------------------------------------------------------
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -75,10 +89,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// plugin manager — maintains gRPC connections to discovered plugins
 	pluginManager := plugin.NewManager()
 
-	// API server
 	apiServer := api.New(api.Config{
 		Addr: envOr("COSMONAUT_API_ADDR", ":8080"),
 		OIDC: api.OIDCConfig{
@@ -89,20 +101,9 @@ func main() {
 		CORSAllowedOrigins: envOr("COSMONAUT_CORS_ORIGINS", "*"),
 		RequestTimeout:     60 * time.Second,
 		DB:                 dbConn,
+		UIFS:               http.FS(uiFS),
 	}, mgr.GetClient(), pluginManager)
 
-
-	uiFS, err := ui.GetFS()
-
-	if err != nil {
-		slog.Error("failed to get UI FS", "err", err)
-		os.Exit(1)
-	}
-	
-	apiServer.SetUI(uiFS)
-
-
-	// health controller
 	if err := (&health.Controller{
 		Client:   mgr.GetClient(),
 		Plugins:  pluginManager,
@@ -112,7 +113,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// plugin discovery controller
 	if err := (&plugin.DiscoveryController{
 		Client:  mgr.GetClient(),
 		Manager: pluginManager,
@@ -121,7 +121,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// API server as a runnable
 	if err := mgr.Add(apiServer); err != nil {
 		slog.Error("unable to add API server to manager", "err", err)
 		os.Exit(1)
@@ -131,12 +130,14 @@ func main() {
 		slog.Error("unable to set up healthz", "err", err)
 		os.Exit(1)
 	}
+
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		slog.Error("unable to set up readyz", "err", err)
 		os.Exit(1)
 	}
 
 	slog.Info("starting manager")
+
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		slog.Error("manager exited with error", "err", err)
 		os.Exit(1)

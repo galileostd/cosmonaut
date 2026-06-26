@@ -46,6 +46,7 @@ type Server struct {
 	k8s     client.Client
 	plugins *plugin.Manager
 	jobs    *JobStore
+	sessions *sessionStore
 	events  *EventBus
 	db      *gorm.DB
 	uiFS    http.FileSystem
@@ -57,13 +58,19 @@ func New(cfg Config, k8s client.Client, plugins *plugin.Manager) *Server {
 	cfg.defaults()
 
 	s := &Server{
-		cfg:     cfg,
-		k8s:     k8s,
-		plugins: plugins,
-		jobs:    newJobStore(),
-		events:  newEventBus(),
-		db:      cfg.DB,
-		uiFS:    cfg.UIFS,
+		cfg:      cfg,
+		k8s:      k8s,
+		plugins:  plugins,
+		jobs:     newJobStore(),
+		sessions: newSessionStore(),
+		events:   newEventBus(),
+		db:       cfg.DB,
+		uiFS:     cfg.UIFS,
+	}
+
+	if s.uiFS == nil {
+		slog.Warn("UIFS not provided, using fallback ./ui/build")
+		s.uiFS = http.Dir("./ui/build")
 	}
 
 	s.http = &http.Server{
@@ -111,7 +118,13 @@ func (s *Server) NeedLeaderElection() bool {
 
 // SetUI defines the filesystem to serve static UI files.
 func (s *Server) SetUI(fsys fs.FS) {
-	s.uiFS = http.FS(fsys)
+	slog.Info("SetUI called", "fsys_nil", fsys == nil)
+	if fsys != nil {
+		s.uiFS = http.FS(fsys)
+	} else {
+		slog.Warn("SetUI called with nil fsys, using fallback ./ui/build")
+		s.uiFS = http.Dir("./ui/build")
+	}
 }
 
 // routes builds and returns the chi router.
@@ -125,11 +138,13 @@ func (s *Server) routes() http.Handler {
 	r.Use(middlewareTimeout(s.cfg.RequestTimeout))
 	r.Use(chimiddleware.StripSlashes)
 
-	// unauthenticated
 	r.Get("/api/v1/system/health", s.handleHealth)
 	r.Get("/api/v1/system/version", s.handleVersion)
 
-	// authenticated
+	r.Post("/api/v1/auth/login", s.handleLogin)
+	r.Post("/api/v1/auth/logout", s.handleLogout)
+	r.Get("/api/v1/auth/me", s.handleMe)
+
 	r.Group(func(r chi.Router) {
 		r.Use(middlewareOIDC(s.cfg.OIDC))
 
@@ -149,49 +164,60 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/v1/events", s.handleEvents)
 	})
 
-	// UI - serve static files
-	if s.uiFS != nil {
-		r.Get("/*", s.handleUI)
-	}
+	// ─── UI ──────────────────────────────────────────────────────
+	r.Handle("/_app/*", http.FileServer(s.uiFS))
+
+	r.Handle("/favicon.ico", http.FileServer(s.uiFS))
+	r.Handle("/robots.txt", http.FileServer(s.uiFS))
+
+	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.URL.Path = "/"
+		http.FileServer(s.uiFS).ServeHTTP(w, req)
+	}))
 
 	return r
 }
 
 // handleUI serves the static UI files.
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
-	requestPath := r.URL.Path
-	if requestPath == "" || requestPath == "/" {
-		requestPath = "/index.html"
+	slog.Info("handleUI called", "path", r.URL.Path, "uiFS_nil", s.uiFS == nil)
+
+	if s.uiFS == nil {
+		slog.Error("uiFS is nil, trying fallback to ./ui/build")
+		s.uiFS = http.Dir("./ui/build")
 	}
 
-	file, err := s.uiFS.Open(path.Clean(requestPath))
-	if err != nil {
-		if strings.Contains(err.Error(), "file does not exist") || strings.Contains(err.Error(), "not found") {
-			indexFile, err := s.uiFS.Open("/index.html")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			defer indexFile.Close()
+	// strip leading slash
+	cleanPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if cleanPath == "" || cleanPath == "." {
+		cleanPath = "index.html"
+	}
 
-			stat, _ := indexFile.Stat()
-			http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile)
+	slog.Info("Opening file", "cleanPath", cleanPath)
+
+	// Try to open the file
+	file, err := s.uiFS.Open(cleanPath)
+	if err == nil {
+		defer file.Close()
+		stat, err := file.Stat()
+		if err == nil {
+			if strings.Contains(cleanPath, ".") {
+				w.Header().Set("Cache-Control", "public, max-age=86400")
+			}
+			http.ServeContent(w, r, path.Base(cleanPath), stat.ModTime(), file)
 			return
 		}
-		http.NotFound(w, r)
-		return
 	}
-	defer file.Close()
 
-	stat, err := file.Stat()
+	// SPA fallback: serve index.html
+	slog.Info("File not found or error, serving index.html", "err", err)
+	indexFile, err := s.uiFS.Open("index.html")
 	if err != nil {
+		slog.Error("index.html not found", "err", err)
 		http.NotFound(w, r)
 		return
 	}
-
-	if strings.Contains(requestPath, ".") {
-		w.Header().Set("Cache-Control", "public, max-age=86400")
-	}
-
-	http.ServeContent(w, r, path.Base(requestPath), stat.ModTime(), file)
+	defer indexFile.Close()
+	stat, _ := indexFile.Stat()
+	http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile)
 }

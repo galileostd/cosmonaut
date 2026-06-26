@@ -1,0 +1,9 @@
+dependencies:
+- name: cockroachdb
+  repository: https://charts.cockroachdb.com/
+  version: 12.0.0
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 15.5.0
+digest: sha256:8dcf0d27aefcf093fd502af5afc886ff0347876ef5a615768f38aeacc75c5014
+generated: "2026-06-26T00:03:03.027183+02:00"

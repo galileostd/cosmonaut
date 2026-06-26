@@ -4,15 +4,26 @@ RUN apk add --no-cache git nodejs npm
 
 WORKDIR /build
 
-COPY ui/ ./ui/
-RUN cd ui && npm install && npm run build
+# Copia todo o projeto
+COPY . .
 
-RUN mkdir -p internal/ui/build && cp -r ui/build/* internal/ui/build/
+# Build do frontend
+WORKDIR /build/ui
+RUN npm ci --silent
+RUN npm run build
 
-COPY go.mod go.sum ./
+# Copia o build para o diretório do embed
+WORKDIR /build
+RUN mkdir -p internal/ui/build \
+ && cp -r ui/build/. internal/ui/build/
+
+# Apenas para debug (remover depois)
+RUN find internal/ui/build
+
+# Dependências Go
 RUN GOPRIVATE="github.com/galileostd/*" go mod download
 
-COPY . .
+# Build do servidor
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /cosmonaut ./cmd/server
 
 FROM gcr.io/distroless/static-debian12

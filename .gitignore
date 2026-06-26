@@ -49,3 +49,4 @@ site/
 
 # Temp
 tmp/
+internal/ui/build/

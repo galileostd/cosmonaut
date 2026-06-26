@@ -1,0 +1,56 @@
+replicaCount: 1
+
+image:
+  repository: cosmonaut
+  pullPolicy: Never
+  tag: "dev"
+
+dev: "true"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+auth:
+  enabled: false
+
+database:
+  driver: "cockroachdb"
+  host: "cosmonaut-cockroachdb-public"
+  port: "26257"
+  user: "root"
+  password: ""
+  database: "cosmonaut"
+  sslMode: "disable"
+  debug: true
+
+cockroachdb:
+  enabled: true
+  statefulset:
+    replicas: 1
+  storage:
+    persistentVolume:
+      size: 2Gi
+  tls:
+    enabled: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+
+postgres:
+  enabled: false
+
+postgresql:
+  enabled: false

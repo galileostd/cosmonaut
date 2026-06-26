@@ -5,6 +5,7 @@
 #   - Minikube installed
 #   - Go 1.26+
 #   - kubectl
+#   - cockroachdb (opcional, para testar o banco)
 #
 # Usage:
 #   ./hack/test-manual.sh
@@ -54,9 +55,13 @@ kubectl create namespace cosmonaut --dry-run=client -o yaml | kubectl apply -f -
 # ─── 4. build control plane ────────────────────────────────────────────────────
 step "Building control plane"
 cd "${REPO_ROOT}"
-cd "${REPO_ROOT}/control-plane"
-go build -o /tmp/cosmonaut-cp ./cmd/server
-cd "${REPO_ROOT}"
+
+# Build com a UI embutida
+make all
+
+# Ou se quiser buildar só o binário sem a UI (mais rápido pro teste)
+# go build -o /tmp/cosmonaut-cp ./cmd/server
+
 echo "Binary: /tmp/cosmonaut-cp"
 
 # ─── 5. run control plane in background ───────────────────────────────────────
@@ -64,8 +69,15 @@ step "Starting control plane (background)"
 
 # controller-runtime needs a kubeconfig to talk to the cluster
 export COSMONAUT_DEV="true"
+export COSMONAUT_DB_DRIVER="postgres"
+export COSMONAUT_DB_HOST="localhost"
+export COSMONAUT_DB_PORT="5432"
+export COSMONAUT_DB_USER="postgres"
+export COSMONAUT_DB_PASSWORD="postgres"
+export COSMONAUT_DB_NAME="cosmonaut"
+export COSMONAUT_DB_SSL_MODE="disable"
 
-/tmp/cosmonaut-cp &
+./bin/cosmonaut &
 CP_PID=$!
 echo "Control plane PID: ${CP_PID}"
 
@@ -73,7 +85,7 @@ echo "Control plane PID: ${CP_PID}"
 trap "echo 'Stopping control plane...'; kill ${CP_PID} 2>/dev/null || true" EXIT
 
 echo "Waiting for control plane to start..."
-sleep 3
+sleep 5
 
 # verify it's alive via the health probe
 if curl -sf http://localhost:8081/healthz > /dev/null; then
