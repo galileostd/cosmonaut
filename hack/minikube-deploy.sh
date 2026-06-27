@@ -66,6 +66,8 @@ if [ "${SKIP_BUILD}" = false ]; then
   docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" "${REPO_ROOT}"
 
   step "Carregando imagem no Minikube..."
+  minikube ssh --profile="${CLUSTER_NAME}" -- docker rmi -f docker.io/library/${IMAGE_NAME}:${IMAGE_TAG} 2>/dev/null || true
+  minikube ssh --profile="${CLUSTER_NAME}" -- docker rmi -f docker.io/library/${IMAGE_NAME}:${IMAGE_TAG} 2>/dev/null || true
   minikube image load "${IMAGE_NAME}:${IMAGE_TAG}" --profile="${CLUSTER_NAME}"
 
   step "Removendo build temporário..."
@@ -81,7 +83,6 @@ helm repo update cockroachdb
 helm dependency update ./charts/cosmonaut
 
 step "Deletando CRD órfão se existir..."
-kubectl delete crd cosmocomponents.cosmonaut.galileostd.io 2>/dev/null || true
 
 step "Fazendo deploy via Helm (sem --wait, vamos controlar manualmente)..."
 helm upgrade --install "${RELEASE_NAME}" \
