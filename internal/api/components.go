@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -52,6 +53,13 @@ type execResponse struct {
 	Status      string    `json:"status"`
 	Message     string    `json:"message,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+// logsResponse is the JSON shape returned by the component-logs endpoint.
+type logsResponse struct {
+	Component string   `json:"component"`
+	Namespace string   `json:"namespace"`
+	Lines     []string `json:"lines"`
 }
 
 // ── handlers ───────────────────────────────────────────────────────────────────
@@ -322,4 +330,64 @@ func isAlreadyExists(err error) bool {
 	}
 	return fmt.Sprintf("%v", err) != "" &&
 		fmt.Sprintf("%T", err) == "*errors.StatusError"
+}
+
+// handleComponentLogs returns the service logs for a component, fetched through
+// its plugin. This is synchronous: logs are a direct read, not a submitted job.
+//
+// GET /api/v1/components/{namespace}/{name}/logs?tail=200
+func (s *Server) handleComponentLogs(w http.ResponseWriter, r *http.Request) {
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	// optional ?tail=N (default 200, 0 = no limit)
+	tail := int32(200)
+	if t := r.URL.Query().Get("tail"); t != "" {
+		if n, err := strconv.Atoi(t); err == nil && n >= 0 {
+			tail = int32(n)
+		}
+	}
+
+	var component registry.CosmoComponent
+	if err := s.k8s.Get(r.Context(), types.NamespacedName{
+		Namespace: namespace,
+		Name:      name,
+	}, &component); err != nil {
+		if isNotFound(err) {
+			writeProblem(w, r, problemNotFound(r, fmt.Sprintf(
+				"component '%s' not found in namespace '%s'", name, namespace,
+			)))
+			return
+		}
+		writeProblem(w, r, problemInternal(r, fmt.Sprintf("failed to get component: %v", err)))
+		return
+	}
+
+	pluginClient := s.plugins.Get(component.Spec.Plugin)
+	if pluginClient == nil {
+		writeProblem(w, r, problemServiceUnavailable(r, fmt.Sprintf(
+			"plugin '%s' is not registered in this control plane", component.Spec.Plugin,
+		)))
+		return
+	}
+
+	sdkComponent := &pluginv1.Component{
+		Name:      component.Name,
+		Namespace: component.Namespace,
+		Endpoint:  component.Spec.Endpoint,
+		Config:    component.Spec.Config,
+	}
+
+	// jobID="" and podName="" → service logs (the plugin resolves which pod)
+	resp, err := pluginClient.GetLogs(r.Context(), sdkComponent, "", "", tail)
+	if err != nil {
+		writeProblem(w, r, problemInternal(r, fmt.Sprintf("failed to fetch logs: %v", err)))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, logsResponse{
+		Component: component.Name,
+		Namespace: component.Namespace,
+		Lines:     resp.Lines,
+	})
 }

@@ -78,7 +78,6 @@ func New(cfg Config, k8s client.Client, restConfig *rest.Config, plugins *plugin
 
 	s.http = &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      s.routes(),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: cfg.RequestTimeout + 5*time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -89,6 +88,9 @@ func New(cfg Config, k8s client.Client, restConfig *rest.Config, plugins *plugin
 
 // Start begins listening for requests. Blocks until the context is canceled.
 func (s *Server) Start(ctx context.Context) error {
+	// Build routes here, after SetUI() has been called by main.go
+	s.http.Handler = s.routes()
+
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -161,6 +163,7 @@ func (s *Server) routes() http.Handler {
 			r.Get("/components/{namespace}/{name}", s.handleGetComponent)
 			r.Delete("/components/{namespace}/{name}", s.handleDeleteComponent)
 			r.Post("/components/{namespace}/{name}/exec", s.handleExecComponent)
+			r.Get("/components/{namespace}/{name}/logs", s.handleComponentLogs)
 
 			r.Get("/jobs", s.handleListJobs)
 			r.Get("/jobs/{id}", s.handleGetJob)
@@ -178,63 +181,18 @@ func (s *Server) routes() http.Handler {
 	r.Handle("/favicon.ico", http.FileServer(s.uiFS))
 	r.Handle("/robots.txt", http.FileServer(s.uiFS))
 
-
 	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-
 		if strings.HasPrefix(req.URL.Path, "/api/") {
 			http.NotFound(w, req)
 			return
 		}
-		req.URL.Path = "/"
+		// SPA: paths without a file extension are client-side routes — serve index.html
+		if !strings.Contains(path.Base(req.URL.Path), ".") {
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+			req.URL.Path = "/"
+		}
 		http.FileServer(s.uiFS).ServeHTTP(w, req)
 	}))
 
 	return r
-}
-
-// handleUI serves the static UI files.
-func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
-	slog.Info("handleUI called", "path", r.URL.Path, "uiFS_nil", s.uiFS == nil)
-
-	if s.uiFS == nil {
-		slog.Error("uiFS is nil, trying fallback to ./ui/build")
-		s.uiFS = http.Dir("./ui/build")
-	}
-
-	cleanPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
-	if cleanPath == "" || cleanPath == "." {
-		cleanPath = "index.html"
-	}
-
-	slog.Info("Opening file", "cleanPath", cleanPath)
-
-	file, err := s.uiFS.Open(cleanPath)
-	if err == nil {
-		defer file.Close()
-		stat, err := file.Stat()
-		if err == nil {
-			if strings.Contains(cleanPath, "immutable") {
-				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			} else if strings.Contains(cleanPath, ".") {
-				w.Header().Set("Cache-Control", "public, max-age=86400")
-			}
-			http.ServeContent(w, r, path.Base(cleanPath), stat.ModTime(), file)
-			return
-		}
-	}
-	// SPA fallback
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	slog.Info("File not found or error, serving index.html", "err", err)
-	indexFile, err := s.uiFS.Open("index.html")
-	if err != nil {
-		slog.Error("index.html not found", "err", err)
-		http.NotFound(w, r)
-		return
-	}
-	defer indexFile.Close()
-	stat, _ := indexFile.Stat()
-	http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile)
 }
