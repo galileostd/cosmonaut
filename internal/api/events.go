@@ -77,7 +77,8 @@ func (eb *EventBus) unsubscribe(id string) {
 // WS /api/v1/events
 //
 // Optional query params:
-//   types: comma-separated list of event types to filter (default: all)
+//
+//	types: comma-separated list of event types to filter (default: all)
 //
 // The client receives a JSON stream of Event objects.
 // The connection stays open until the client disconnects.

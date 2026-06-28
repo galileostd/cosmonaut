@@ -17,14 +17,14 @@ var (
 )
 
 type healthResponse struct {
-	Status  string `json:"status"`
-	Uptime  string `json:"uptime"`
+	Status string `json:"status"`
+	Uptime string `json:"uptime"`
 }
 
 type versionResponse struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
-	Date    string `json:"date"`
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	Date      string `json:"date"`
 	GoVersion string `json:"go_version"`
 }
 

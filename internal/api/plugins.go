@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/go-chi/chi/v5"
 	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
+	"github.com/go-chi/chi/v5"
 )
 
 type pluginResponse struct {
@@ -29,7 +29,7 @@ type capabilityResponse struct {
 func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 	p := parsePagination(r)
 
-	details := s.plugins.All(r.Context())
+	details := s.plugins.DescribeAll(r.Context())
 
 	// sort by name for deterministic output
 	sort.Slice(details, func(i, j int) bool {

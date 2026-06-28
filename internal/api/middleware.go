@@ -17,7 +17,7 @@ type contextKey string
 
 const (
 	contextKeyRequestID contextKey = "request_id"
-	contextKeyClaims   contextKey = "claims"
+	contextKeyClaims    contextKey = "claims"
 )
 
 // Claims holds the verified JWT claims from an OIDC token.

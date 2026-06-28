@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -146,60 +146,60 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 // setStatus updates the CosmoComponent status with retry on conflict.
 // Re-fetches the object before each attempt to ensure the resourceVersion is current.
 func (c *Controller) setStatus(
-    ctx context.Context,
-    key types.NamespacedName,
-    state pluginv1.HealthState,
-    message string,
-    capabilities []string,
+	ctx context.Context,
+	key types.NamespacedName,
+	state pluginv1.HealthState,
+	message string,
+	capabilities []string,
 ) error {
-    return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-        var current registry.CosmoComponent
-        if err := c.Get(ctx, key, &current); err != nil {
-            return fmt.Errorf("fetching CosmoComponent for status update: %w", err)
-        }
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current registry.CosmoComponent
+		if err := c.Get(ctx, key, &current); err != nil {
+			return fmt.Errorf("fetching CosmoComponent for status update: %w", err)
+		}
 
-        now := metav1.Now()
-        current.Status.Health = healthStateString(state)
-        current.Status.Message = message
-        current.Status.LastChecked = &now
-        current.Status.ObservedGeneration = current.Generation
+		now := metav1.Now()
+		current.Status.Health = healthStateString(state)
+		current.Status.Message = message
+		current.Status.LastChecked = &now
+		current.Status.ObservedGeneration = current.Generation
 
-        if capabilities != nil {
-            current.Status.Capabilities = capabilities
-        }
+		if capabilities != nil {
+			current.Status.Capabilities = capabilities
+		}
 
-        healthy := state == pluginv1.HealthState_HEALTH_STATE_HEALTHY
-        conditionStatus := metav1.ConditionTrue
-        conditionReason := "HealthCheckPassed"
-        if !healthy {
-            conditionStatus = metav1.ConditionFalse
-            conditionReason = "HealthCheckFailed"
-        }
+		healthy := state == pluginv1.HealthState_HEALTH_STATE_HEALTHY
+		conditionStatus := metav1.ConditionTrue
+		conditionReason := "HealthCheckPassed"
+		if !healthy {
+			conditionStatus = metav1.ConditionFalse
+			conditionReason = "HealthCheckFailed"
+		}
 
-        setCondition(&current.Status.Conditions, metav1.Condition{
-            Type:               conditionTypeHealthy,
-            Status:             conditionStatus,
-            Reason:             conditionReason,
-            Message:            message,
-            LastTransitionTime: now,
-            ObservedGeneration: current.Generation,
-        })
+		setCondition(&current.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeHealthy,
+			Status:             conditionStatus,
+			Reason:             conditionReason,
+			Message:            message,
+			LastTransitionTime: now,
+			ObservedGeneration: current.Generation,
+		})
 
-        if err := c.Status().Update(ctx, &current); err != nil {
-            slog.Error("failed to update status",
-                "component", key.Name,
-                "health", current.Status.Health,
-                "err", err,
-            )
-            return err
-        }
+		if err := c.Status().Update(ctx, &current); err != nil {
+			slog.Error("failed to update status",
+				"component", key.Name,
+				"health", current.Status.Health,
+				"err", err,
+			)
+			return err
+		}
 
-        slog.Info("status updated",
-            "component", key.Name,
-            "health", current.Status.Health,
-        )
-        return nil
-    })
+		slog.Info("status updated",
+			"component", key.Name,
+			"health", current.Status.Health,
+		)
+		return nil
+	})
 }
 
 func healthStateString(state pluginv1.HealthState) string {
