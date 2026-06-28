@@ -64,7 +64,7 @@ func New(cfg Config, k8s client.Client, restConfig *rest.Config, plugins *plugin
 		k8s:        k8s,
 		restConfig: restConfig,
 		plugins:    plugins,
-		jobs:       newJobStore(),
+		jobs:       newJobStore(cfg.DB),
 		sessions:   newSessionStore(),
 		events:     newEventBus(),
 		db:         cfg.DB,

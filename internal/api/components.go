@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
 	"github.com/galileostd/cosmonaut/internal/registry"
+	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -281,9 +281,15 @@ func (s *Server) handleExecComponent(w http.ResponseWriter, r *http.Request) {
 		Config:    component.Spec.Config,
 	}
 
-	job := s.jobs.Submit(func(ctx context.Context) (*pluginv1.ExecuteResponse, error) {
-		return pluginClient.Execute(ctx, sdkComponent, req.Action, req.Payload)
-	})
+	job := s.jobs.Submit(
+		component.Name,        // componentID
+		component.Name,        // name
+		component.Spec.Plugin, // plugin
+		req.Action,            // action
+		func(ctx context.Context) (*pluginv1.ExecuteResponse, error) {
+			return pluginClient.Execute(ctx, sdkComponent, req.Action, req.Payload)
+		},
+	)
 
 	writeJSON(w, http.StatusAccepted, execResponse{
 		JobID:     job.ID,

@@ -2,59 +2,148 @@ package api
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 
+	pluginv1 "github.com/galileostd/cosmonaut-sdk/go/plugin/v1"
+	"github.com/galileostd/cosmonaut/internal/registry"
 	"github.com/go-chi/chi/v5"
 )
 
+// ── Response types ───────────────────────────────────────────────────────────
+
 type jobResponse struct {
-	ID        string     `json:"id"`
-	Status    string     `json:"status"`
-	Error     string     `json:"error,omitempty"`
-	Result    any        `json:"result,omitempty"`
-	CreatedAt string     `json:"created_at"`
-	UpdatedAt string     `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Plugin      string            `json:"plugin"`
+	PluginJobID string            `json:"plugin_job_id,omitempty"`
+	Action      string            `json:"action"`
+	Status      string            `json:"status"`
+	ErrorMsg    string            `json:"error_msg,omitempty"`
+	Result      map[string]string `json:"result,omitempty"`
+	SubmitTime  string            `json:"submit_time"`
+	StartTime   string            `json:"start_time,omitempty"`
+	EndTime     string            `json:"end_time,omitempty"`
+	Duration    string            `json:"duration,omitempty"`
+	CreatedAt   string            `json:"created_at"`
+}
+
+type jobsResponse struct {
+	Jobs  []*pluginv1.GetJobResponse `json:"jobs"`
+	Total int32                      `json:"total"`
 }
 
 func toJobResponse(j *Job) jobResponse {
-	resp := jobResponse{
-		ID:        j.ID,
-		Status:    string(j.Status),
-		Error:     j.Error,
-		CreatedAt: j.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt: j.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+	r := jobResponse{
+		ID:          j.ID,
+		Name:        j.Name,
+		Plugin:      j.Plugin,
+		PluginJobID: j.PluginJobID,
+		Action:      j.Action,
+		Status:      string(j.Status),
+		ErrorMsg:    j.ErrorMsg,
+		Result:      j.Result,
+		SubmitTime:  j.SubmitTime.UTC().Format("2006-01-02T15:04:05Z"),
+		Duration:    j.Duration,
+		CreatedAt:   j.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
-	if j.Result != nil {
-		resp.Result = j.Result
+	if j.StartTime != nil {
+		r.StartTime = j.StartTime.UTC().Format("2006-01-02T15:04:05Z")
 	}
-	return resp
+	if j.EndTime != nil {
+		r.EndTime = j.EndTime.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	return r
 }
 
-// handleListJobs returns a paginated list of async jobs.
+// ── Handlers ─────────────────────────────────────────────────────────────────
+
+// handleListJobs returns all jobs across all workload plugins.
+// Merges jobs submitted via Cosmonaut with jobs discovered directly
+// from plugins (Airflow, kubectl, scripts, etc). Deduplicates by job_id.
+//
 // GET /api/v1/jobs
-// Query params: limit, offset, status (optional filter: pending, running, done, failed, canceled)
+//
+//	?component=spark
+//	?state=running|succeeded|failed|pending
+//	?job_name=my-pipeline
+//	?job_group=etl-diaria
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	p := parsePagination(r)
-	statusFilter := r.URL.Query().Get("status")
+	ctx := r.Context()
+	q := r.URL.Query()
 
-	all := s.jobs.List(statusFilter)
-	total := len(all)
+	stateFilter := parseJobState(q.Get("state"))
+	jobName := q.Get("job_name")
+	jobGroup := q.Get("job_group")
+	componentFilter := q.Get("component")
 
-	start := p.Offset
-	if start > total {
-		start = total
-	}
-	end := start + p.Limit
-	if end > total {
-		end = total
-	}
-
-	responses := make([]jobResponse, len(all[start:end]))
-	for i, j := range all[start:end] {
-		responses[i] = toJobResponse(j)
+	var componentList registry.CosmoComponentList
+	if err := s.k8s.List(ctx, &componentList); err != nil {
+		writeProblem(w, r, problemInternal(r, fmt.Sprintf("listing components: %v", err)))
+		return
 	}
 
-	writeJSON(w, http.StatusOK, newPagedResponse(responses, total, p))
+	seen := make(map[string]bool)
+	var allJobs []*pluginv1.GetJobResponse
+
+	for _, component := range componentList.Items {
+		if componentFilter != "" && component.Name != componentFilter {
+			continue
+		}
+		if component.Spec.Type != "processing" && component.Spec.Type != "orchestration" {
+			continue
+		}
+		if !hasCapability(component.Status.Capabilities, "list-jobs") {
+			continue
+		}
+
+		pluginClient := s.plugins.Get(component.Spec.Plugin)
+		if pluginClient == nil {
+			continue
+		}
+
+		sdkComponent := &pluginv1.Component{
+			Name:      component.Name,
+			Namespace: component.Namespace,
+			Endpoint:  component.Spec.Endpoint,
+			Config:    component.Spec.Config,
+		}
+
+		resp, err := pluginClient.ListJobs(ctx, sdkComponent, stateFilter, jobName, jobGroup, 0, 0)
+		if err != nil {
+			slog.Warn("listJobs: plugin error",
+				"plugin", component.Spec.Plugin,
+				"component", component.Name,
+				"err", err,
+			)
+			continue
+		}
+
+		for _, job := range resp.Jobs {
+			if seen[job.JobId] {
+				continue
+			}
+			seen[job.JobId] = true
+
+			if job.Details == nil {
+				job.Details = make(map[string]string)
+			}
+			job.Details["_component"] = component.Name
+			job.Details["_plugin"] = component.Spec.Plugin
+
+			allJobs = append(allJobs, job)
+		}
+	}
+
+	if allJobs == nil {
+		allJobs = []*pluginv1.GetJobResponse{}
+	}
+
+	writeJSON(w, http.StatusOK, jobsResponse{
+		Jobs:  allJobs,
+		Total: int32(len(allJobs)),
+	})
 }
 
 // handleGetJob returns a single job by ID.
@@ -71,7 +160,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toJobResponse(job))
 }
 
-// handleCancelJob attempts to cancel a running or pending job.
+// handleCancelJob cancels a running or pending job.
 // DELETE /api/v1/jobs/:id
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -90,4 +179,32 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+func parseJobState(s string) pluginv1.JobState {
+	switch strings.ToLower(s) {
+	case "running":
+		return pluginv1.JobState_JOB_STATE_RUNNING
+	case "succeeded", "completed":
+		return pluginv1.JobState_JOB_STATE_SUCCEEDED
+	case "failed":
+		return pluginv1.JobState_JOB_STATE_FAILED
+	case "pending":
+		return pluginv1.JobState_JOB_STATE_PENDING
+	case "canceled":
+		return pluginv1.JobState_JOB_STATE_CANCELED
+	default:
+		return pluginv1.JobState_JOB_STATE_UNSPECIFIED
+	}
+}
+
+func hasCapability(caps []string, target string) bool {
+	for _, c := range caps {
+		if c == target {
+			return true
+		}
+	}
+	return false
 }

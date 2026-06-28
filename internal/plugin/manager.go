@@ -26,9 +26,6 @@ type PluginInfo struct {
 
 	// ServiceName is the K8s Service name.
 	ServiceName string
-
-	// Describe cache — populated on first successful call.
-	describe *pluginv1.DescribeResponse
 }
 
 // Manager maintains gRPC connections to all discovered plugins.
@@ -39,8 +36,9 @@ type Manager struct {
 }
 
 type entry struct {
-	info   PluginInfo
-	client *sdkclient.Client
+	info     PluginInfo
+	client   *sdkclient.Client
+	describe *pluginv1.DescribeResponse // Describe cache — populated on first successful call
 }
 
 // NewManager creates a new plugin Manager.
@@ -83,21 +81,20 @@ func (m *Manager) Unregister(name string) {
 	}
 }
 
-
 // UnregisterByService removes a plugin by looking up the Service name.
 // This is necessary because when the Service is deleted, we no longer have access to its labels.
 func (m *Manager) UnregisterByService(serviceName, namespace string) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    for name, e := range m.plugins {
-        if e.info.ServiceName == serviceName && e.info.Namespace == namespace {
-            _ = e.client.Close()
-            delete(m.plugins, name)
-            slog.Info("plugin unregistered by service", "name", name, "service", serviceName)
-            return
-        }
-    }
+	for name, e := range m.plugins {
+		if e.info.ServiceName == serviceName && e.info.Namespace == namespace {
+			_ = e.client.Close()
+			delete(m.plugins, name)
+			slog.Info("plugin unregistered by service", "name", name, "service", serviceName)
+			return
+		}
+	}
 }
 
 // Get returns the gRPC client for a plugin by name.
@@ -112,20 +109,44 @@ func (m *Manager) Get(name string) *sdkclient.Client {
 	return nil
 }
 
-// GetInfo returns metadata about a registered plugin.
-func (m *Manager) GetInfo(name string) (PluginInfo, bool) {
+// Describe returns the describe response for a plugin.
+// Results are cached after the first successful call.
+func (m *Manager) Describe(ctx context.Context, name string) (*pluginv1.DescribeResponse, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	e, ok := m.plugins[name]
+	m.mu.RUnlock()
 
-	if e, ok := m.plugins[name]; ok {
-		return e.info, true
+	if !ok {
+		return nil, fmt.Errorf("plugin %q is not registered", name)
 	}
-	return PluginInfo{}, false
+
+	// fast path: cache hit
+	if e.describe != nil {
+		return e.describe, nil
+	}
+
+	// slow path: fetch from plugin and cache
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// double-check: another goroutine might have populated it while we waited for the write lock
+	if e.describe != nil {
+		return e.describe, nil
+	}
+
+	desc, err := e.client.Describe(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("describing plugin %q: %w", name, err)
+	}
+
+	e.describe = desc
+	return desc, nil
 }
 
-// All returns all registered plugins with their describe responses.
+// DescribeAll returns describe responses for all registered plugins.
 // Plugins that fail to describe are skipped with a warning.
-func (m *Manager) All(ctx context.Context) []PluginDetail {
+// Results are cached per plugin for subsequent calls.
+func (m *Manager) DescribeAll(ctx context.Context) []PluginDetail {
 	m.mu.RLock()
 	entries := make([]*entry, 0, len(m.plugins))
 	for _, e := range m.plugins {
@@ -135,7 +156,7 @@ func (m *Manager) All(ctx context.Context) []PluginDetail {
 
 	details := make([]PluginDetail, 0, len(entries))
 	for _, e := range entries {
-		desc, err := e.client.Describe(ctx)
+		desc, err := m.Describe(ctx, e.info.Name)
 		if err != nil {
 			slog.Warn("failed to describe plugin", "name", e.info.Name, "err", err)
 			continue
@@ -148,13 +169,15 @@ func (m *Manager) All(ctx context.Context) []PluginDetail {
 	return details
 }
 
-// Describe returns the describe response for a single plugin.
-func (m *Manager) Describe(ctx context.Context, name string) (*pluginv1.DescribeResponse, error) {
-	client := m.Get(name)
-	if client == nil {
-		return nil, fmt.Errorf("plugin %q is not registered", name)
+// InvalidateDescribe clears the cached describe for a plugin.
+// The next call to Describe will fetch fresh data from the plugin.
+func (m *Manager) InvalidateDescribe(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if e, ok := m.plugins[name]; ok {
+		e.describe = nil
 	}
-	return client.Describe(ctx)
 }
 
 // IsAlive checks if a plugin gRPC server is reachable.
@@ -177,8 +200,6 @@ func (m *Manager) Names() []string {
 	}
 	return names
 }
-
-
 
 // PluginDetail combines plugin info with its describe response.
 type PluginDetail struct {
